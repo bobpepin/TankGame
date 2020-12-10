@@ -1,10 +1,17 @@
+// DONE
+// Port to WebGL1, test on mobile
+// Network multiplayer
+
+// TODO
+// Tank life
+// When driving, reversal requires to pass through the center
+// Different tanks
+// Different weapons
 // Show active tank
 // Make camera focus in front of tank, according to current tank trajectory
-// When driving, reversal requires to pass through the center
 // Put joystick indicators
 // Support for gamepads and multiple tanks
 // Make computer tanks drive around randomly
-// Port to WebGL1, test on mobile
 // Change controls when driving in mud
 // Obstacles
 // Destroy environment
@@ -47,10 +54,18 @@ const twoTriangles = {
 class PointerJoystick {
     constructor(elt, radius) {
         this.radius = radius || 16;
-        elt.addEventListener("pointerdown", e => this.handleDown(e));
-        elt.addEventListener("pointerup", e => this.handleUp(e));
-        elt.addEventListener("pointerout", e => this.handleUp(e));        
-        elt.addEventListener("pointermove", e => this.handleMove(e));
+//         elt.addEventListener("pointerdown", e => this.handleDown(e));
+        elt.addEventListener("mousedown", e => this.handleDown(e));        
+//         elt.addEventListener("pointerup", e => this.handleUp(e));
+        elt.addEventListener("mouseup", e => this.handleUp(e));        
+//        elt.addEventListener("pointerout", e => this.handleUp(e));        
+//         elt.addEventListener("pointermove", e => this.handleMove(e));
+        elt.addEventListener("mousemove", e => this.handleMove(e));        
+        
+        elt.addEventListener("touchstart", e => this.handleTouchStart(e));
+        elt.addEventListener("touchend", e => this.handleTouchEnd(e));
+        elt.addEventListener("touchcancel", e => this.handleTouchEnd(e));        
+        elt.addEventListener("touchmove", e => this.handleTouchMove(e));        
         this.canvas = elt;
         this.context = elt.getContext("2d");
         this.active = false;
@@ -58,14 +73,51 @@ class PointerJoystick {
     }
     
     handleDown(event) {
+        console.log("down", event);
         event.preventDefault();
+        event.stopPropagation();
+        this.start(event.offsetX, event.offsetY);
+    }
+    
+    getTouchOffset(event) {
+        const touch = event.changedTouches[0];
+        const eltRect = this.canvas.getBoundingClientRect();
+        const offsetX = touch.clientX - eltRect.left;
+        const offsetY = touch.clientY - eltRect.top;
+        return [offsetX, offsetY];
+    }
+                
+    handleTouchStart(event) {
+//         console.log("touchstart");
+        event.preventDefault();
+        event.stopPropagation();
+        if(event.changedTouches.length == 0)
+            return;
+        const [offsetX, offsetY] = this.getTouchOffset(event);
+        this.start(offsetX, offsetY);
+    }   
+    
+    start(offsetX, offsetY) {
+//         console.log("start", offsetX, offsetY);
         if(this.active) return;
-        this.origin = [event.offsetX, event.offsetY];
+        this.origin = [offsetX, offsetY];
         this.active = true;
     }
     
     handleUp(event) {
         event.preventDefault();
+        event.stopPropagation();
+        this.stop();
+    }
+    
+    handleTouchEnd(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if(event.targetTouches.length == 0)
+            this.stop();
+    }
+    
+    stop() {
         this.active = false;
         this.axes = [0, 0];
         const {context, canvas} = this;
@@ -74,11 +126,25 @@ class PointerJoystick {
     
     handleMove(event) {
         event.preventDefault();
+        event.stopPropagation();
+        this.move(event.offsetX, event.offsetY);
+    }
+    
+    handleTouchMove(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if(event.changedTouches.length == 0)
+            return;
+        const [offsetX, offsetY] = this.getTouchOffset(event);
+        this.move(offsetX, offsetY);
+    }
+    
+    move(offsetX, offsetY) {
         if(!this.active) return;
         const {context, canvas} = this;
         context.clearRect(0, 0, canvas.width, canvas.height);
         const [x0, y0] = this.origin;
-        const [x, y] = [event.offsetX, event.offsetY];
+        const [x, y] = [offsetX, offsetY];
         this.axes = [x-x0, y0-y].map(a => Math.max(Math.min(a, this.radius), -this.radius)/this.radius);
         context.beginPath();
         context.strokeStyle = 'black';
@@ -125,7 +191,8 @@ class PointerDown {
 
 class InputButton {
     constructor(elt) {
-        elt.addEventListener("pointerdown", e => this.handleDown(e));
+        elt.addEventListener("mousedown", e => this.handleDown(e));
+        elt.addEventListener("touchdown", e => this.handleDown(e));        
         this.count = 0;
     }
     
@@ -139,7 +206,53 @@ class InputButton {
     }
 }
 
+const audioContext = new AudioContext();
+
+async function loadSoundData(ctx, url) {
+    const response = await fetch(url);
+    const data = await response.arrayBuffer();
+//     const ctx = new AudioContext();
+//     console.log(response);
+    return await new Promise((resolve, reject) => {
+        ctx.decodeAudioData(data, resolve, reject);
+    });
+}
+
+class Jukebox {
+    constructor() {
+        this.buffers = {};
+    }
+    
+    async load(sources) {
+        for(const name in sources) {
+            this.buffers[name] = await loadSoundData(audioContext, sources[name]);
+        }
+    }
+    
+    play(name) {
+        const ctx = audioContext;
+        const buffer = this.buffers[name];
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        console.log("play", source, buffer);        
+        source.start();
+    }
+}
+
+const jukebox = new Jukebox();
+async function initSound() {
+//    const jukebox = new Jukebox();
+    await jukebox.load({shot: "sounds/shot.flac", hit: "sounds/hit.flac"});
+    document.querySelector("#fire-button").addEventListener("mousedown", e => {
+        jukebox.play("shot");
+    });
+}
+        
+
 async function init() {
+    const p = initSound();
+    await p;
     const controlCanvas = document.querySelector("#control-canvas");
     const joystick = new PointerJoystick(controlCanvas);
     const fireButton = new InputButton(document.querySelector("#fire-button"));
@@ -147,28 +260,29 @@ async function init() {
     const canvas = document.querySelector("#game-canvas");
     const gl = canvas.getContext("webgl");
     if (!gl)
-        throw "Unable to obtain WebGL2 Context";
+        throw "Unable to obtain WebGL Context";
 
 //     gl.enable(gl.DEPTH_TEST);
 //     gl.enable(gl.CULL_FACE);
-    gl.enable(gl.SCISSOR_TEST);
+//     gl.enable(gl.SCISSOR_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
     const shaders = await initShaders(gl);
-    
-    const {tankState, tanks, tankTree} = await initTanks(gl, shaders);
+    const framebuffers = initFramebuffers(gl);
+    const tanks = await initTanks(gl, shaders);
 
     const projectiles = await initProjectiles(gl, shaders);
     
     const cameraDynamics = new CameraDynamics();
     
     const state = {
+        gameId: Math.random(),
         shaders,
+        framebuffers,
         time: [0],
+        bufferIndex: 0,
         tanks,
-        tankTree,
-        tankState,
         projectiles,
         cameraDynamics,
         collisions: {projectileTanks: []},
@@ -182,8 +296,12 @@ async function init() {
             pointers: [],
             fireButtons: [fireButton]
         },
+        obstacles: await initObstacles(gl, shaders),
         controllers: [{steering: [0, 0], fire: 0}],
-        projectionMatrix: new Float32Array(Identity4x4)
+        deadReckoning: {incoming: [], outgoing: []},
+        network: {incoming: [], outgoing: []},
+        networkMessages: [],
+        projectionMatrix: new Float32Array(Identity4x4),
     }
 
     state.frustumBox = createFrustumBox(gl, state);
@@ -191,75 +309,136 @@ async function init() {
     const ground = await createGroundDrawing(gl, state);
     state.drawings.push(ground);
     
+    const hostname = document.location.hostname;
+    const websocket = new WebSocket(`ws://${hostname}:8080`);
+    websocket.onmessage = async function (event) {
+        let text;
+        try {
+            text = await event.data.text();
+        } catch(e) {
+            text = event.data;
+        }
+        state.networkMessages.push(text);
+//         console.log("received network message", text);
+    }
+    
     console.log(state);
-    requestAnimationFrame(time => animate(gl, state, time));
+    requestAnimationFrame(time => animate(gl, state, time, websocket));
 }
 
-function animate(gl, state, time) {
-    render(gl, state, time);
-    requestAnimationFrame(time => animate(gl, state, time));
+function animate(gl, state, time, websocket) {
+    render(gl, state, time, websocket);
+    requestAnimationFrame(time => animate(gl, state, time, websocket));
 }
 
-function render(gl, state, timeMs) {
-    document.getElementById("msglog-1").innerHTML = "";
+function render(gl, state, timeMs, websocket) {
+//     document.getElementById("msglog-1").innerHTML = "";
 //     document.getElementById("msglog-2").innerHTML = "";
     const time = timeMs * 1e-3;
     state.dt = (time - state.time[0]);
     state.time[0] = time;
-    updateDirectorCamera(gl, state);
 
+    const nextBufferIndex = (state.bufferIndex+1)%2;
+    state.bufferIndex = nextBufferIndex;
+    
     updateInput(state);
+    processNetworkMessages(state);
+    updateObstacles(state);
     
     state.collisions.projectileTanks = detectProjectileTankCollisions(state);
 
-    const tankState = new TankState(state.tankState.tankNodes);
-    nextTankState(state, tankState);
-    const projectileState = 
-          state.projectiles.buffers[(state.projectiles.bufferIndex+1)%2];
-    projectileState.evolve(state);
+    const tankState = state.tanks.nextState;
+    tankState.setEvolve(state);
+    const projectileState = state.projectiles.nextState;
+    projectileState.setEvolve(state);
     
-    state.tankState = tankState;
-    state.projectiles.state = projectileState;
-    state.projectiles.bufferIndex = (state.projectiles.bufferIndex+1)%2;
+    swapStateBuffers(state.tanks);
+    swapStateBuffers(state.projectiles);
+    
+    state.outgoingNetworkMessages = [
+        ...state.tanks.state.deadReckoningUpdates,
+        ...state.projectiles.state.deadReckoningUpdates
+    ];
+    sendNetworkMessages(websocket, state);
     
     updateTankTree(gl, state);
     state.projectiles.state.updateWorldMatrices(state.projectiles.matrices);
     state.projectiles.drawing.spriteCount = state.projectiles.state.count;
     
-    state.cameraDynamics.update(state);
-    state.cameraDynamics.updateCameraMatrix(state.cameras.player);
+    gl.canvas.width = gl.canvas.clientWidth;
+    gl.canvas.height = gl.canvas.clientHeight;
     
-    GT.updateGeometryTree(state.tankTree, {matrix: Identity4x4});
+    GT.updateGeometryTree(state.tanks.tankTree, {matrix: Identity4x4});
     
-    GT.invert4x4Matrix(state.cameras.player, state.frustumBox.worldMatrix);    
-
+    state.tanks.soundscape.play(jukebox, state);
+    
+    renderTankTexture(gl, state);
+    
     gl.clearColor(0, 255, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    const directorCameraEnabled = false;
     {
-        const viewport = [0, 0, gl.drawingBufferWidth/2, gl.drawingBufferHeight];
+        const width = directorCameraEnabled ? 
+              gl.drawingBufferWidth/2 : gl.drawingBufferWidth;
+        const viewport = [0, 0, width, gl.drawingBufferHeight];
         gl.viewport(...viewport);
+        state.cameraDynamics.update(state, width/gl.drawingBufferHeight);
+        state.cameraDynamics.updateCameraMatrix(state.cameras.player);
         state.projectionMatrix.set(state.cameras.player);
         state.drawings.map(({drawing}) => GT.draw(gl, drawing));
-        state.tanks.map(({drawing}) => drawing.draw(gl, state));
+        for(const type in state.obstacles) {
+            state.obstacles[type].drawing.draw(gl, state);
+        }
+        state.tanks.drawings.slice(0, state.tanks.state.count).map(({drawing}) => drawing.draw(gl, state));
         state.projectiles.drawing.draw(gl, state);
     }
-    {
+    if(directorCameraEnabled) {
         const viewport = [gl.drawingBufferWidth/2, 0, gl.drawingBufferWidth/2, gl.drawingBufferHeight];
         gl.viewport(...viewport);
+        updateDirectorCamera(gl, state);
         state.projectionMatrix.set(state.cameras.director);
         state.drawings.map(({drawing}) => GT.draw(gl, drawing));        
-        state.tanks.map(({drawing}) => drawing.draw(gl, state));        
+        state.tanks.drawings.slice(0, state.tanks.state.count).map(({drawing}) => drawing.draw(gl, state));        
         state.projectiles.drawing.draw(gl, state);
+        GT.invert4x4Matrix(state.cameras.player, state.frustumBox.worldMatrix);
         GT.draw(gl, state.frustumBox.drawing);        
     }
+}
+
+function swapStateBuffers(x) {
+    const tmp = x.state;
+    x.state = x.nextState;
+    x.nextState = tmp;
+}
+
+function renderTankTexture(gl, state) {
+    const {framebuffer, texture, width, height, pixelbuffer, canvasContext, imagedata} = state.framebuffers;
+    const originalFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.clearColor(255, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    const viewport = [0, 0, width, height];
+    gl.viewport(...viewport);
+    state.cameraDynamics.update(state, width/height);
+    state.cameraDynamics.updateCameraMatrix(state.cameras.player);
+    state.projectionMatrix.set(state.cameras.player);
+//     state.drawings.map(({drawing}) => GT.draw(gl, drawing));
+//     for(const type in state.obstacles) {
+//         state.obstacles[type].drawing.draw(gl, state);
+//     }
+    state.tanks.drawings.slice(0, state.tanks.state.count).map(({drawing}) => drawing.draw(gl, state));
+//     state.projectiles.drawing.draw(gl, state);
+//     gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixelbuffer);
+//     canvasContext.putImageData(imagedata, 0, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, originalFramebuffer);
 }
 
 function updateInput(state) {
     const input = [0, 0];
     if(state.inputDevices.pointers[0] && state.inputDevices.pointers[0].active) {
         const pointer = state.inputDevices.pointers[0];
-        const tankPos = [state.tankState.positions[2*tank_index],
-                         state.tankState.positions[2*tank_index+1]];
+        const tankPos = [state.tanks.state.positions[2*tank_index],
+                         state.tanks.state.positions[2*tank_index+1]];
         input[0] = 2*pointer.position[0] - 1 - tankPos[0];
         input[1] = 2*pointer.position[1] - 1 - tankPos[1];
     }
@@ -272,18 +451,50 @@ function updateInput(state) {
     state.inputDevices.fireButtons[0].reset();
 }
 
+
+function processNetworkMessages(state) {
+    state.deadReckoning.incoming = [];
+    state.network.incoming = [];
+    for(const text of state.networkMessages) {
+        try {
+            const msg = JSON.parse(text);
+            if(msg.sender == state.gameId)
+                continue;
+            if(msg.type == "deadReckoning") {
+//                 console.log("received deadReckoning", msg);
+                state.deadReckoning.incoming.push(msg);
+            } else {
+                state.network.incoming.push(msg);
+            }
+        } catch(e) {
+            console.log("Error processing network input", text, e);
+            continue;
+        }
+    }
+    state.networkMessages = [];
+}
+
+function sendNetworkMessages(websocket, state) {
+    for(const msg of state.outgoingNetworkMessages) {
+        websocket.send(JSON.stringify({sender: state.gameId, ...msg}));
+    }
+    state.outgoingNetworkMessages = [];
+}
+
 class CameraDynamics {
     constructor(scale) {
-        this.scale = scale || 0.5;
+        this.scale = scale || 0.5;        
         this.center = [0, 0];
         // xmin ymin xmax ymax, relative to center
         this.focusField = [-0.25, -0.25, 0.25, 0.25]; //.map(x => x/this.scale);
         this.acceleration = [0.0, 0.0];
         this.velocity = [0.0, 0.0];
+        this.ratio = 1;
     }
     
-    update(state) {
-        const tankPos = state.tankState.getPosition(state.tankState.activeTank);
+    // ratio = width / height
+    update(state, ratio) {
+        const tankPos = state.tanks.state.getPosition(state.tanks.state.activeTank);
         const fovPos = [tankPos[0]-this.center[0], tankPos[1]-this.center[1]];
         let stop = 0;
         if(fovPos[0] < this.focusField[0]) {
@@ -305,18 +516,24 @@ class CameraDynamics {
 //         if(stop == 2) {
 //             this.velocity = [0, 0];
 //         }
-        document.querySelector("#msglog-1").innerHTML = `${tankPos[0]},${tankPos[1]} ${fovPos[0]},${fovPos[1]} ${this.center[0]},${this.center[1]} ${stop}`;
+//         document.querySelector("#msglog-1").innerHTML = `${tankPos[0]},${tankPos[1]} ${fovPos[0]},${fovPos[1]} ${this.center[0]},${this.center[1]} ${stop}`;
         this.center[0] += this.velocity[0] * state.dt;
         this.center[1] += this.velocity[1] * state.dt;
+        
+        this.ratio = ratio;
+        
     }
     
     updateCameraMatrix(matrix) {
         const s = this.scale;
+        const r = this.ratio;
+        const sx = s/Math.max(r, 1);
+        const sy = s/Math.min(r, 1)
         matrix.set([
-            s, 0, 0, 0,
-            0, s, 0, 0,
+            sx, 0, 0, 0,
+            0, sy, 0, 0,
             0, 0, 1, 0,
-            -this.center[0]*s, -this.center[1]*s, 0, 1
+            -this.center[0]*sx, -this.center[1]*sy, 0, 1
         ]);
     }
 }
@@ -342,6 +559,28 @@ async function initShaders(gl) {
         }
     }
     return await GT.loadShaders(gl, shaderSources);
+}
+
+function initFramebuffers(gl) {
+    const width = 512;
+    const height = 512;
+    const originalFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, originalFramebuffer);
+    const canvas = document.querySelector("#texture-canvas");
+    const ctx = canvas.getContext("2d");
+    const imagedata = ctx.createImageData(width, height);
+    const pixelbuffer = new Uint8Array(imagedata.data.buffer);
+    return {texture, framebuffer, pixelbuffer, imagedata, canvasContext: ctx, width, height};
 }
 
 function createLinesNode(gl, state, positions, index) {
@@ -581,8 +820,57 @@ class SpriteDrawing {
             const matrix = worldMatrices[i];
             gl.uniformMatrix4fv(uniformLocations.worldMatrix, false, matrix);
             gl.drawArrays(gl.TRIANGLES, 0, count);
+//             document.querySelector("#msglog-1").innerHTML += matrix;
         }
     }
+}
+
+async function initObstacles(gl, shaders) {
+    const images = {
+        barrel: "kenney_topdownTanksRedux/PNG/Retina/barrelBlack_side.png",
+        barricade: "kenney_topdownTanksRedux/PNG/Retina/barricadeWood.png"
+    }
+    const objects = {}
+    for(const type in images) {
+        const image = await GT.loadImage(images[type]);
+        const drawing = new SpriteDrawing(gl, shaders.sprite, image);
+        objects[type] = {
+            drawing
+        }
+    }
+    return objects;
+}
+
+function updateObjectDrawing(drawing, objects) {
+    drawing.worldMatrices = [];
+    const min = -4;
+    const max = 4;
+    for(const obj of objects) {
+        const x = (obj.x - 0.5)*(max-min);
+        const y = -(obj.y - 0.5)*(max-min);        
+        const s = 0.1;
+        const mat = new Float32Array([
+            s, 0, 0, 0,
+            0, s, 0, 0,
+            0, 0, 1, 0,
+            x, y, 0, 1
+        ]);
+        drawing.worldMatrices.push(mat);
+    }
+    drawing.spriteCount = drawing.worldMatrices.length;
+    console.log(drawing);
+}
+
+function updateObstacles(state) {
+    for(const msg of state.network.incoming) {
+        if(msg.type != "mapUpdate")
+            continue;
+        console.log(msg);
+//         continue;
+        for(const type in msg.mapState.objects) {
+            updateObjectDrawing(state.obstacles[type].drawing, msg.mapState.objects[type]);
+        }
+    }   
 }
 
 async function initTanks(gl, shaders) {
@@ -596,6 +884,7 @@ async function initTanks(gl, shaders) {
     }
     const baseurl = "kenney_topdownTanksRedux/PNG/Retina";
     const img = await GT.loadImage(baseurl + "/tank_red.png");
+//     const img = await GT.loadImage("tank_bigRedGreen.png");
 
     for(let i=0; i < 10; i++) {
         const drawing = new TankDrawing(gl, shaders, img);
@@ -613,6 +902,7 @@ async function initTanks(gl, shaders) {
         tanks.push(tank);
     }
     const tankState = new TankState(tankTree.children);
+    const tankState1 = new TankState(tankTree.children);
     for(let i=0; i < 10; i++) {
         const [x, y] = [5*(2*Math.random()-1), 5*(2*Math.random()-1)];
         tankState.positions[2*i] = x;
@@ -624,8 +914,11 @@ async function initTanks(gl, shaders) {
     tankState.orientations[0] = -Math.PI;
     tankState.positions[2] = 0.0;
     tankState.positions[3] = 0.5;
-    tankState.orientations[1] = 0;    
-    return {tankTree, tankState, tanks};
+    tankState.orientations[1] = 0;
+    tankState.ids[0] = Math.floor(Math.random() * 1e6);
+    tankState.count = 10;
+    const soundscape = new TankSoundscape();
+    return {tankTree, state: tankState, nextState: tankState1, drawings: tanks, soundscape};
 }
 
 class TankState {
@@ -633,21 +926,58 @@ class TankState {
         this.activeTank = 0;
         this.tankNodes = tankNodes;
         const N = tankNodes.length;
-        this.length = N;
+        this.count = 0;
+        this.maxCount = N;
+        this.ids = new Uint32Array(N);
         this.positions = new Float32Array(N*2);
         this.orientations = new Float32Array(N);
         this.velocities = new Float32Array(N);
+        this.accelerations = new Float32Array(N);
         this.torques = new Float32Array(N);
-        this.hitTimes = new Float32Array(N);
+        this.angularAccelerations = new Float32Array(N);
+        this.updateTimes = new Float32Array(N);
+        this.hitTimes = new Float32Array(N);        
         this.hitTimes.fill(-1e6);
+        this.deadReckoningVelocities = new Float32Array(N);
+        this.deadReckoningTorques = new Float32Array(N);
+        this.deadReckoningUpdates = [];
+    }
+    
+    get length() {
+        return this.count;
+    }
+    
+    set length(n) {
+        this.count = n;
     }
     
     set(tankState) {
+        this.count = tankState.count;
+        this.tankNodes = tankState.tankNodes;
+        this.ids.set(tankState.ids);
         this.positions.set(tankState.positions);
         this.orientations.set(tankState.orientations);
         this.velocities.set(tankState.velocities);
+        this.accelerations.set(tankState.accelerations);
         this.torques.set(tankState.torques);
+        this.angularAccelerations.set(tankState.angularAccelerations);
+        this.updateTimes.set(tankState.updateTimes);        
         this.hitTimes.set(tankState.hitTimes);
+        this.deadReckoningVelocities.set(tankState.deadReckoningVelocities);
+        this.deadReckoningTorques.set(tankState.deadReckoningTorques);        
+        this.deadReckoningUpdates = tankState.deadReckoningUpdates.slice();
+    }
+    
+    getIndex(id) {
+        return this.ids.indexOf(id);
+    }
+    
+    add(id) {
+        const i = this.count;
+        this.ids[i] = id;
+        this.updateTimes[i] = 0;
+        this.count++;
+        return i;
     }
     
     setPosition(i, [x, y]) {
@@ -666,64 +996,104 @@ class TankState {
         const tank_e1 = [-tank_e0[1], tank_e0[0]];
         return new Float32Array([tank_e0[0], tank_e0[1], tank_e1[0], tank_e1[1]]);
     }
+    
+    setEvolve(state) {
+        nextTankState(state, this);
+    }
 }
 
 let nanMsg = "";
 
 function nextTankState(state, nextState) {
-//     const input = state.controllers[0].axes;
-    const input = state.controllers[0].steering;
-    const tank_index = state.tankState.activeTank;
-    const dt = state.dt;
-    nextState.set(state.tankState);
-//     document.querySelector("#msglog-1").innerHTML = 
-//             `${state.controllers.pointers[0].position} ${input[0]}, ${input[1]}`;    
+    nextState.set(state.tanks.state);
+   
     const collisions = state.collisions.projectileTanks;
+
     const collidedTanks = new Set(collisions.map(([_, i]) => i));
     for(const i of collidedTanks) {
-        nextState.hitTimes[i] = state.time;
-        document.querySelector("#msglog-2").innerHTML = `hit ${i} ${nextState.hitTimes[i]}`;
+        nextState.hitTimes[i] = state.time[0];
     }
-    
-    const tank_angle = state.tankState.orientations[tank_index];    
-    // e0, e1 -> Tank moving frame
-    const tank_e0 = [Math.cos(tank_angle-Math.PI/2), Math.sin(tank_angle-Math.PI/2)];
-    const tank_e1 = [-tank_e0[1], tank_e0[0]];
-    const input_x = tank_e0[0]*input[0] + tank_e0[1]*input[1];
-    const input_y = tank_e1[0]*input[0] + tank_e1[1]*input[1];
-    const accel = input_x;
-    const turn = input_x > 0 ? input_y : -input_y;
-    const friction = 5;
-    const v0 = nextState.velocities[tank_index];
-    const v1 = Math.max(-1.0, Math.min(1.0, v0 + accel * dt - friction * v0 * dt));
-    nextState.velocities[tank_index] = v1;
-//     document.querySelector("#msglog-1").innerHTML = 
-//             `${nextState.torques[tank_index]}, ${turn} ${input[0]}, ${input[1]}`;
-    if(turn != turn) {
-        nanMsg = `${nextState.torques[tank_index]}, ${turn}, (${input[0]}, ${input[1]}) (${tank_e0[0]}, ${tank_e0[1]}) (${input_x}, ${input_y})`;        
-    } else {
-        nextState.torques[tank_index] += turn * dt -         nextState.torques[tank_index] * dt;
-    }
-//     document.querySelector("#msglog-2").innerHTML = nanMsg;
 
+    {
+        const input = state.controllers[0].steering;
+        const tank_index = state.tanks.state.activeTank;
+        const dt = state.dt;
+        const tank_angle = state.tanks.state.orientations[tank_index];    
+        // e0, e1 -> Tank moving frame
+        const tank_e0 = [Math.cos(tank_angle-Math.PI/2), Math.sin(tank_angle-Math.PI/2)];
+        const tank_e1 = [-tank_e0[1], tank_e0[0]];
+        const input_x = tank_e0[0]*input[0] + tank_e0[1]*input[1];
+        const input_y = tank_e1[0]*input[0] + tank_e1[1]*input[1];
+        const accel = input_x;
+        const turn = input_x > 0 ? input_y : -input_y;
+        nextState.accelerations[tank_index] = accel;
+        nextState.angularAccelerations[tank_index] = turn;
+    }
+// {"type": "deadReckoning", "object": "tank", "index": 1, "position": [0, 0], "velocity": 1, "acceleration": 1}
+    
+    for(const dr of state.deadReckoning.incoming) {
+        if(dr.object != "tank")
+            continue;
+        let i = dr.index !== undefined ? dr.index : nextState.getIndex(dr.id);
+        if(i == -1) 
+            i = nextState.add(dr.id);
+        if(i == 0)
+            continue;
+        nextState.setPosition(i, dr.position);
+        nextState.velocities[i] = dr.velocity;
+        nextState.accelerations[i] = dr.acceleration;
+        nextState.orientations[i] = dr.orientation;
+        nextState.angularAccelerations[i] = dr.angularAcceleration;
+        nextState.torques[i] = dr.torque;
+//         console.log("velocities after DR", state.time[0], nextState.velocities);
+    }
+    const friction = 5;
+    nextState.deadReckoningUpdates = [];
     for(let i=0; i < nextState.length; i++) {
-        const tank_angle = state.tankState.orientations[i];
+        const dt = state.time - nextState.updateTimes[i];
+        const tank_angle = state.tanks.state.orientations[i];
         const direction = [Math.cos(tank_angle-Math.PI/2), Math.sin(tank_angle-Math.PI/2)];
+        const accel = nextState.accelerations[i];
+        const v0 = nextState.velocities[i];
+        const v1 = Math.max(-1.0, Math.min(1.0, v0 + accel * dt - friction * v0 * dt));
+        nextState.velocities[i] = v1;
+        const turn = state.tanks.state.angularAccelerations[i];
+        nextState.torques[i] += turn * dt - nextState.torques[i] * dt;
+
+                if(Math.abs(v1 - nextState.deadReckoningVelocities[i]) > 1e-2
+          || Math.abs(nextState.torques[i] - nextState.deadReckoningTorques[i]) > 1e-2) {
+            nextState.deadReckoningUpdates.push({
+                type: "deadReckoning",
+                time: state.time[0],
+                id: nextState.ids[i],
+                position: nextState.getPosition(i),
+                orientation: nextState.orientations[i],
+                velocity: v1,
+                acceleration: accel,
+                angularAcceleration: nextState.angularAccelerations[i],
+                torque: nextState.torques[i],
+                object: "tank"
+            });
+            nextState.deadReckoningVelocities[i] = v1;
+            nextState.deadReckoningTorques[i] = nextState.torques[i];            
+        }
+        
         nextState.positions[2*i] += direction[0] * nextState.velocities[i] * dt;
         nextState.positions[2*i+1] += direction[1] * nextState.velocities[i] * dt;
         nextState.orientations[i] += nextState.torques[i] * dt;
     }
+    nextState.updateTimes.fill(state.time);    
 }
 
 function updateTankTree(gl, state) {
-    const tankState = state.tankState;
+    const tankState = state.tanks.state;
     for(let i=0; i < tankState.length; i++) {
-        const node = tankState.tankNodes[i];
+        const node = state.tanks.state.tankNodes[i];
         node.translation[0] = tankState.positions[2*i];
         node.translation[1] = tankState.positions[2*i+1];
         node.rotation[0] = Math.cos((tankState.orientations[i])/2);
         node.rotation[3] = Math.sin((tankState.orientations[i])/2);
-        state.tanks[i].drawing.hitTimes[0] = state.tankState.hitTimes[i];
+        state.tanks.drawings[i].drawing.hitTimes[0] = state.tanks.state.hitTimes[i];
     }
 }
 
@@ -813,12 +1183,16 @@ class TankDrawing {
     }
 }
 
-class TankDrawing1 extends SpriteDrawing {
-    constructor(gl, shaders, img) {
-        super(gl, shaders.tank, img);
-        this.worldMatrix = new Float32Array(Identity4x4);
-        this.worldMatrices.push(this.worldMatrix);
-        this.spriteCount = 1;
+class TankSoundscape {
+    play(jukebox, state) {
+        const hitTimes = state.tanks.state.hitTimes;
+//         document.querySelector("#msglog-1").innerHTML = `${state.time} ${hitTimes}`;
+        for(let i=0; i < state.tanks.state.count; i++) {
+            if(Math.abs(hitTimes[i] - state.time[0]) < 1e-3) {
+                console.log("hit", jukebox);
+                jukebox.play("hit");
+            }
+        }
     }
 }
 
@@ -836,10 +1210,9 @@ async function initProjectiles(gl, shaders) {
     
     const projectiles = {
         state: projectileState0,
+        nextState: projectileState1,
         drawing: projectileDrawing,
         matrices: projectileMatrices,
-        bufferIndex: 0,
-        buffers: [projectileState0, projectileState1]
     };
     
     return projectiles;
@@ -854,6 +1227,8 @@ class ProjectileState {
         this.velocities = new Float32Array(2*N);
         this.frames = new Float32Array(4*N);
         this.sources = new Float32Array(N);
+        this.ids = new Uint32Array(N);
+        this.deadReckoningUpdates = [];
     }
     
     add(position, velocity, frame, source) {
@@ -864,7 +1239,9 @@ class ProjectileState {
         this.velocities[2*i+1] = velocity[1];
         this.frames.set(frame, 4*i);
         this.sources[i] = source;
+        this.ids[i] = Math.floor(Math.random()*(2**32-1));
         this.count++;
+        return i;
     }
     
     remove(i) {
@@ -872,14 +1249,17 @@ class ProjectileState {
         this.velocities.copyWithin(2*i, 2*(i+1));
         this.frames.copyWithin(4*i, 4*(i+1));
         this.sources.copyWithin(i, (i+1));        
+        this.ids.copyWithin(i, (i+1));        
         this.count--;
     }
         
-    evolve(state) {
+    setEvolve(state) {
         const prevState = state.projectiles.state;
         const prevCount = prevState.count;
-
-        const collisions = state.collisions.projectileTanks.filter(([_, j]) => state.tankState.activeTank != j);
+        const tankState = state.tanks.state;
+        const collisions = state.collisions.projectileTanks;
+//         if(collisions.length > 0)
+//             console.log(collisions, prevState.sources, tankState);
         const collidedProjectiles = new Set(collisions.map(([i, _]) => i));
         let j=0;
         for(let i=0; i < prevCount; i++) {
@@ -898,10 +1278,32 @@ class ProjectileState {
             this.frames[4*j+2] = prevState.frames[4*i+2];
             this.frames[4*j+3] = prevState.frames[4*i+3];
             this.sources[j] = prevState.sources[i];
+            this.ids[j] = prevState.ids[i];            
             j++;
         }
         this.count = j;
+        this.deadReckoningUpdates = [];
 
+        for(const msg of state.deadReckoning.incoming) {
+            if(msg.object != "projectile")
+                continue;
+            let i = this.ids.indexOf(msg.id);
+            console.log(msg, i, this.ids);            
+            if(i == -1) {
+                i = this.add(msg.position, msg.velocity, msg.frame, msg.source);
+                this.ids[i] = msg.id;
+            } else {
+                this.positions[2*i] = msg.position[0];
+                this.positions[2*i+1] = msg.position[1];
+                this.velocities[2*i] = msg.velocity[0];
+                this.velocities[2*i+1] = msg.velocity[1];
+                this.frames[4*i] = msg.frame[0];
+                this.frames[4*i+1] = msg.frame[1];
+                this.frames[4*i+2] = msg.frame[2];
+                this.frames[4*i+3] = msg.frame[3];
+                this.sources[i] = msg.source;
+            }
+        }
         const N = this.count;
         const dt = state.dt;
         for(let i=0; i < N; i++) {
@@ -913,11 +1315,20 @@ class ProjectileState {
                  this.velocities[2*i+1] * this.frames[4*i+3]) * dt;
         }
         if(state.controllers[0].fire) {
-            const activeTank = state.tankState.activeTank;
-            const tankPos = state.tankState.getPosition(activeTank);
-            const frame = state.tankState.getFrame(activeTank);
+            const activeTank = state.tanks.state.activeTank;
+            const activeTankId = state.tanks.state.ids[activeTank];
+            const tankPos = state.tanks.state.getPosition(activeTank);
+            const frame = state.tanks.state.getFrame(activeTank);
             // document.querySelector("#msglog-2").innerHTML = frame;
-            this.add(tankPos, [1, 0], frame, activeTank);
+            const i = this.add(tankPos, [1, 0], frame, activeTankId);
+            this.deadReckoningUpdates.push({
+                type: "deadReckoning",
+                object: "projectile",
+                id: this.ids[i],
+                position: tankPos, velocity: [1, 0], 
+                frame: Array.from(frame), source: activeTankId
+            });
+            console.log("fire", activeTankId, this.ids[i]);
         }
     }
     
@@ -946,11 +1357,11 @@ function detectProjectileTankCollisions(state) {
     const tankRadius = 0.1;
     const maxD2 = (projectileRadius + tankRadius)**2;
     const collisions = [];
-    const tankState = state.tankState;
+    const tankState = state.tanks.state;
     const projectileState = state.projectiles.state;
     for(let i=0; i < projectileState.count; i++) {
         for(let j=0; j < tankState.length; j++) {
-            if(j == projectileState.sources[i]) // avoid self-fire
+            if(tankState.ids[j] == projectileState.sources[i]) // avoid self-fire
                 continue;
             const d2 = 
                   (projectileState.positions[2*i] - tankState.positions[2*j])**2 + 

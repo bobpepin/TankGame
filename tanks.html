@@ -1,6 +1,12 @@
 <!doctype html>
 <meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="js/webgl-v1.1.js"></script>
+<script src="js/AudioContextMonkeyPatch.js"></script>
+<style>
+    html { height: 100%; width: 100%; }
+    body { border: 0; margin: 0; height: 100%; width: 100% }
+</style>
 <!--
 <div style="position: relative">
 
@@ -12,19 +18,22 @@
 
 </div>
 -->
-<div>
-
-<canvas id="game-canvas" height=512 width=1024></canvas>
-
+<div style="display: flex; width: 100%; height: 100%; flex-direction: column">
+<!-- <div style="flex: 1 1 0; display: flex; flex-direction: row"> -->
+<div style="flex: 0 1 auto; display: flex; flex-direction: row">
+<canvas id="game-canvas" height=512 width=512 style="flex: 0 0 512px"></canvas>
+<canvas id="texture-canvas" height=512 width=512 style="flex: 0 0 512px"></canvas>    
+</div>
+<div style="flex: 0 0 128px">
 <canvas id="control-canvas" height=128 width=128 style="outline: 1px solid black;">
 </canvas>
 <button type="button" id="fire-button" style="width: 128px; height: 128px; vertical-align: top; outline: 1px solid black;">
 <img src="kenney_topdownTanksRedux/PNG/Retina/bulletRed1_outline.png">    
 </button>
-
 </div>
-<script type="module" src="js/tanks.js"></script>
-<div>Director Camera
+
+<div style="flex: 0 1 auto">
+<div style="display: none">Director Camera
     <label>Distance</label>
     <input type="number" id="director-distance" min="0" value="5">
     <label>Theta</label>
@@ -36,3 +45,6 @@
 </div>
 <div><label>Log 1</label> <span id="msglog-1"></span></div>
 <div><label>Log 2</label> <span id="msglog-2"></span></div>
+</div>
+</div>
+<script type="module" src="js/tanks.js"></script>
