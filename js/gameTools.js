@@ -78,7 +78,7 @@ export async function loadShaders(gl, sources) {
                           gl.getProgramInfoLog(program.program));
             console.error(`Vertex shader info-log: ${name}: ${vsUrl}:` + 
                           gl.getShaderInfoLog(program.vertexShader));
-            console.error(`Fragment shader info-log: ${name}: ${vsUrl}:` + 
+            console.error(`Fragment shader info-log: ${name}: ${fsUrl}:` + 
                           gl.getShaderInfoLog(program.fragmentShader));
             error = true;
         }
@@ -203,7 +203,10 @@ export function orbitCamera(center, latitude, longitude, distance) {
         0, 0, 1, 0,
         -x, -y, -z, 1]);
     const q_lat = eulerQuaternion(-latitude, [-1, 0, 0]);
-    const q_long = eulerQuaternion(-longitude, [0, 1, 0]);
+    // Y up
+//     const q_long = eulerQuaternion(-longitude, [0, 1, 0]);
+    // Z up
+    const q_long = eulerQuaternion(-longitude, [0, 0, 1]);    
     const T_d = new Float32Array([
         1, 0, 0, 0,
         0, 1, 0, 0,

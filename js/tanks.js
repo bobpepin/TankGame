@@ -1,17 +1,24 @@
+// 01234567890123456789012345678901234567890123456789012345678901234567890123456789
 // DONE
 // Port to WebGL1, test on mobile
 // Network multiplayer
+// Terrain
+// Make computer tanks drive around randomly
+
+// TOFIX
+// Sort out tank orientation, all orientations in 3D
 
 // TODO
+// Terrain texture
 // Tank life
 // When driving, reversal requires to pass through the center
+// Bump maps & shadows
 // Different tanks
 // Different weapons
 // Show active tank
 // Make camera focus in front of tank, according to current tank trajectory
 // Put joystick indicators
 // Support for gamepads and multiple tanks
-// Make computer tanks drive around randomly
 // Change controls when driving in mud
 // Obstacles
 // Destroy environment
@@ -20,10 +27,10 @@
 // Upgrades & new weapons
 // Mission goals (rescue/destroy/...)
 // Build environment
-// Bump maps & shadows
+
 
 import * as GT from "./gameTools.js"
-import {matmul} from "./gameTools.js"
+import {matmul, crossProduct} from "./gameTools.js"
 
 const Identity4x4 = new Float32Array([
         1, 0, 0, 0,
@@ -76,10 +83,12 @@ class PointerJoystick {
         console.log("down", event);
         event.preventDefault();
         event.stopPropagation();
-        this.start(event.offsetX, event.offsetY);
+//         this.start(event.offsetX, event.offsetY);
+        this.start(event.clientX, event.clientY);
     }
     
     getTouchOffset(event) {
+        return [touch.clientX, touch.clientY];
         const touch = event.changedTouches[0];
         const eltRect = this.canvas.getBoundingClientRect();
         const offsetX = touch.clientX - eltRect.left;
@@ -97,9 +106,12 @@ class PointerJoystick {
         this.start(offsetX, offsetY);
     }   
     
-    start(offsetX, offsetY) {
+    start(clientX, clientY) {
 //         console.log("start", offsetX, offsetY);
         if(this.active) return;
+        const eltRect = this.canvas.getBoundingClientRect();
+        const offsetX = clientX - eltRect.left;
+        const offsetY = clientY - eltRect.top;        
         this.origin = [offsetX, offsetY];
         this.active = true;
     }
@@ -127,7 +139,8 @@ class PointerJoystick {
     handleMove(event) {
         event.preventDefault();
         event.stopPropagation();
-        this.move(event.offsetX, event.offsetY);
+//         this.move(event.offsetX, event.offsetY);
+        this.move(event.clientX, event.clientY);
     }
     
     handleTouchMove(event) {
@@ -139,15 +152,18 @@ class PointerJoystick {
         this.move(offsetX, offsetY);
     }
     
-    move(offsetX, offsetY) {
+    move(clientX, clientY) {
         if(!this.active) return;
         const {context, canvas} = this;
         context.clearRect(0, 0, canvas.width, canvas.height);
+        const eltRect = this.canvas.getBoundingClientRect();
+        const offsetX = clientX - eltRect.left;
+        const offsetY = clientY - eltRect.top;                
         const [x0, y0] = this.origin;
         const [x, y] = [offsetX, offsetY];
         this.axes = [x-x0, y0-y].map(a => Math.max(Math.min(a, this.radius), -this.radius)/this.radius);
         context.beginPath();
-        context.strokeStyle = 'black';
+        context.strokeStyle = "black";
         context.lineWidth = 1;
         context.moveTo(x0, y0);
         context.lineTo(x, y);
@@ -235,7 +251,7 @@ class Jukebox {
         const source = ctx.createBufferSource();
         source.buffer = buffer;
         source.connect(ctx.destination);
-        console.log("play", source, buffer);        
+//         console.log("play", source, buffer);        
         source.start();
     }
 }
@@ -251,8 +267,7 @@ async function initSound() {
         
 
 async function init() {
-    const p = initSound();
-    await p;
+    await initSound();
     const controlCanvas = document.querySelector("#control-canvas");
     const joystick = new PointerJoystick(controlCanvas);
     const fireButton = new InputButton(document.querySelector("#fire-button"));
@@ -262,7 +277,8 @@ async function init() {
     if (!gl)
         throw "Unable to obtain WebGL Context";
 
-//     gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
 //     gl.enable(gl.CULL_FACE);
 //     gl.enable(gl.SCISSOR_TEST);
     gl.enable(gl.BLEND);
@@ -270,8 +286,23 @@ async function init() {
 
     const shaders = await initShaders(gl);
     const framebuffers = initFramebuffers(gl);
+    
+    const terrain = new Terrain(
+        "perlin12.png", 
+//         "square mountain.png",
+//         "gradient bilinear.png",
+        {xmin: -20, xmax: 20, ymin: -20, ymax: 20, zmin: 0, zmax: 1, 
+         xres: 10e-1, yres: 10e-1}
+    );
+    await terrain.load();
+    const terrainDrawing = new TerrainDrawing(
+        gl, terrain, 
+        {
+            position: gl.getAttribLocation(shaders.terrain.program, "position"),
+            normal: gl.getAttribLocation(shaders.terrain.program, "normal")
+        }
+    );
     const tanks = await initTanks(gl, shaders);
-
     const projectiles = await initProjectiles(gl, shaders);
     
     const cameraDynamics = new CameraDynamics();
@@ -280,8 +311,10 @@ async function init() {
         gameId: Math.random(),
         shaders,
         framebuffers,
-        time: [0],
+        time: 0,
         bufferIndex: 0,
+        terrain,
+        terrainDrawing,
         tanks,
         projectiles,
         cameraDynamics,
@@ -302,6 +335,9 @@ async function init() {
         network: {incoming: [], outgoing: []},
         networkMessages: [],
         projectionMatrix: new Float32Array(Identity4x4),
+        
+        gltfDrawingTanks: await testGLTFTanks(gl, shaders.gltf.program),
+        gltfDrawingProjectiles: await testGLTFProjectiles(gl, shaders.gltf.program),        
     }
 
     state.frustumBox = createFrustumBox(gl, state);
@@ -335,8 +371,8 @@ function render(gl, state, timeMs, websocket) {
 //     document.getElementById("msglog-1").innerHTML = "";
 //     document.getElementById("msglog-2").innerHTML = "";
     const time = timeMs * 1e-3;
-    state.dt = (time - state.time[0]);
-    state.time[0] = time;
+    state.dt = (time - state.time);
+    state.time = time;
 
     const nextBufferIndex = (state.bufferIndex+1)%2;
     state.bufferIndex = nextBufferIndex;
@@ -361,22 +397,23 @@ function render(gl, state, timeMs, websocket) {
     ];
     sendNetworkMessages(websocket, state);
     
-    updateTankTree(gl, state);
     state.projectiles.state.updateWorldMatrices(state.projectiles.matrices);
     state.projectiles.drawing.spriteCount = state.projectiles.state.count;
     
     gl.canvas.width = gl.canvas.clientWidth;
     gl.canvas.height = gl.canvas.clientHeight;
     
-    GT.updateGeometryTree(state.tanks.tankTree, {matrix: Identity4x4});
-    
+//     GT.updateGeometryTree(state.tanks.tankTree, {matrix: Identity4x4});
+    state.gltfDrawingTanks.update(state);
+    state.gltfDrawingProjectiles.update(state);    
+    state.tanks.drawing.update(gl, state);
     state.tanks.soundscape.play(jukebox, state);
     
     renderTankTexture(gl, state);
     
     gl.clearColor(0, 255, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    const directorCameraEnabled = false;
+    const directorCameraEnabled = true;
     {
         const width = directorCameraEnabled ? 
               gl.drawingBufferWidth/2 : gl.drawingBufferWidth;
@@ -389,26 +426,53 @@ function render(gl, state, timeMs, websocket) {
         for(const type in state.obstacles) {
             state.obstacles[type].drawing.draw(gl, state);
         }
-        state.tanks.drawings.slice(0, state.tanks.state.count).map(({drawing}) => drawing.draw(gl, state));
-        state.projectiles.drawing.draw(gl, state);
+//         state.tanks.drawing.draw(gl, state);
+//         state.projectiles.drawing.draw(gl, state);
+        state.terrainDrawing.draw(gl, state.shaders.terrain, state);
+        state.gltfDrawingTanks.draw(gl, state.shaders.gltf.program, state);
+        state.gltfDrawingProjectiles.draw(gl, state.shaders.gltf.program, state);        
     }
     if(directorCameraEnabled) {
         const viewport = [gl.drawingBufferWidth/2, 0, gl.drawingBufferWidth/2, gl.drawingBufferHeight];
         gl.viewport(...viewport);
         updateDirectorCamera(gl, state);
         state.projectionMatrix.set(state.cameras.director);
-        state.drawings.map(({drawing}) => GT.draw(gl, drawing));        
-        state.tanks.drawings.slice(0, state.tanks.state.count).map(({drawing}) => drawing.draw(gl, state));        
-        state.projectiles.drawing.draw(gl, state);
+        state.drawings.map(({drawing}) => GT.draw(gl, drawing));
+//         state.tanks.drawing.draw(gl, state);
+//         state.projectiles.drawing.draw(gl, state);
         GT.invert4x4Matrix(state.cameras.player, state.frustumBox.worldMatrix);
-        GT.draw(gl, state.frustumBox.drawing);        
-    }
+        GT.draw(gl, state.frustumBox.drawing); 
+        state.terrainDrawing.draw(gl, state.shaders.terrain, state);        
+        state.gltfDrawingTanks.draw(gl, state.shaders.gltf.program, state);
+        state.gltfDrawingProjectiles.draw(gl, state.shaders.gltf.program, state);       }
 }
 
 function swapStateBuffers(x) {
     const tmp = x.state;
     x.state = x.nextState;
     x.nextState = tmp;
+}
+
+function initFramebuffers(gl) {
+    const width = 512;
+    const height = 512;
+    const originalFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, originalFramebuffer);
+    const canvas = document.querySelector("#texture-canvas");
+    const ctx = canvas.getContext("2d");
+    const imagedata = ctx.createImageData(width, height);
+    const pixelbuffer = new Uint8Array(imagedata.data.buffer);
+    return {texture, framebuffer, pixelbuffer, imagedata, canvasContext: ctx, width, height};
 }
 
 function renderTankTexture(gl, state) {
@@ -426,7 +490,7 @@ function renderTankTexture(gl, state) {
 //     for(const type in state.obstacles) {
 //         state.obstacles[type].drawing.draw(gl, state);
 //     }
-    state.tanks.drawings.slice(0, state.tanks.state.count).map(({drawing}) => drawing.draw(gl, state));
+    state.tanks.drawing.draw(gl, state);
 //     state.projectiles.drawing.draw(gl, state);
 //     gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixelbuffer);
 //     canvasContext.putImageData(imagedata, 0, 0);
@@ -532,7 +596,7 @@ class CameraDynamics {
         matrix.set([
             sx, 0, 0, 0,
             0, sy, 0, 0,
-            0, 0, 1, 0,
+            0, 0, -s, 0,
             -this.center[0]*sx, -this.center[1]*sy, 0, 1
         ]);
     }
@@ -545,6 +609,10 @@ async function initShaders(gl) {
             vertexShaderUrl: "js/ground_vertex.glsl",
             fragmentShaderUrl: "js/ground_fragment.glsl"
         },
+        "gltf": {
+            vertexShaderUrl: "js/gltf.vert.glsl",
+            fragmentShaderUrl: "js/gltf.frag.glsl"
+        },        
         "sprite": {
             vertexShaderUrl: "js/sprite_vertex.glsl",
             fragmentShaderUrl: "js/sprite_fragment.glsl"
@@ -556,31 +624,13 @@ async function initShaders(gl) {
         "lines": {
             vertexShaderUrl: "js/lines_vertex.glsl",
             fragmentShaderUrl: "js/lines_fragment.glsl"
+        },
+        "terrain": {
+            vertexShaderUrl: "js/terrain.vert.glsl",
+            fragmentShaderUrl: "js/terrain.frag.glsl"            
         }
     }
     return await GT.loadShaders(gl, shaderSources);
-}
-
-function initFramebuffers(gl) {
-    const width = 512;
-    const height = 512;
-    const originalFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
-    const framebuffer = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    const texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, originalFramebuffer);
-    const canvas = document.querySelector("#texture-canvas");
-    const ctx = canvas.getContext("2d");
-    const imagedata = ctx.createImageData(width, height);
-    const pixelbuffer = new Uint8Array(imagedata.data.buffer);
-    return {texture, framebuffer, pixelbuffer, imagedata, canvasContext: ctx, width, height};
 }
 
 function createLinesNode(gl, state, positions, index) {
@@ -600,11 +650,6 @@ function createLinesNode(gl, state, positions, index) {
         vao,
         uniforms: [
             {
-                type: "uniform1f", 
-                location: timeUniform,
-                values: state.time
-            },
-            {
                 type: "uniformMatrix4fv",
                 location: projectionLocation,
                 values: [false, state.projectionMatrix]
@@ -622,6 +667,217 @@ function createLinesNode(gl, state, positions, index) {
         indexed: index ? true : false
     }
     return {drawing, worldMatrix};
+}
+
+class Logger {
+    constructor() {
+        this.lastLogTime = 0;
+    }
+    
+    log(time, ...args) {
+        if(time - this.lastLogTime > 10 || time == this.lastLogTime) {
+            console.log(...args);
+            this.lastLogTime = time;
+        }
+    }
+}
+
+const logger = new Logger();
+// logger.log(0, "Logger in itialized");
+
+class Terrain {
+    // region: {xmin, xmax, ymin, ymax}
+    constructor(url, region) {
+        this.url = url;
+        this.region = region;
+    }
+    async load() {
+        const img = this.img = await GT.loadImage(this.url);
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+//         console.log(canvas.width, canvas.height);
+        this.imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+//         console.log(this.imageData);
+        this.buildMesh(this.region.xres, this.region.yres);
+    }
+    getElevation(x, y, time) {
+        const {xmin, xmax, ymin, ymax, zmin, zmax} = this.region;
+        const u = (y - ymin)/(ymax - ymin);
+        const v = (x - xmin)/(xmax - xmin);
+        let i = this.imageData.height - Math.floor(u*this.imageData.height);
+        let j = Math.floor(v*this.imageData.width);
+        i = Math.max(0, Math.min(i, this.imageData.height-1));
+        j = Math.max(0, Math.min(j, this.imageData.width-1));        
+        const val = this.imageData.data[4*(i*this.imageData.width+j)];
+        const elevation = zmin + val/255*(zmax-zmin);
+        if(time) {
+//             logger.log(time, "getElevation", x, y, u, v, i, j, val, elevation);
+        }
+        return elevation;
+    }
+    
+    getDerivative(x, y, dx, dy, time) {
+        const norm = Math.sqrt(dx**2+dy**2);
+        const h = Math.max(
+            this.region.xmax-this.region.xmin,
+            this.region.ymax-this.region.ymin
+        ) / Math.min(this.imageData.width, this.imageData.height);
+        const dx1 = dx/norm;
+        const dy1 = dy/norm;
+        let de = 0;
+        for(let i=1; i < 10; i++) {
+            const e1 = this.getElevation(x, y, time);
+            const e2 = this.getElevation(x+dx1*i*h, y+dy1*i*h, time);
+            de += (e2-e1)/(i*h);
+//             logger.log(time, "getDerivative", x, y, dx, dy, norm, h, dx1, dy1, e1, e2, de);        
+        }
+        de /= 10;
+        return de;
+    }
+    
+    buildMesh(resolutionX, resolutionY) {
+        const n = Math.floor((this.region.xmax-this.region.xmin)/resolutionX) + 1;
+        const m = Math.floor((this.region.ymax-this.region.ymin)/resolutionY) + 1;
+        const vertices = new Float32Array(n*m*3);
+        const normals = new Float32Array(n*m*3);
+        const triangles = new Uint16Array(2*(n-1)*(m-1)*3);
+        console.log(n, m);
+        for(let i=0; i < n; i++) {
+            for(let j=0; j < m; j++) {
+                const x = this.region.xmin+i*resolutionX;
+                const y = this.region.ymin+j*resolutionY;
+                vertices[3*(j*n+i)] = x
+                vertices[3*(j*n+i)+1] = y;
+                vertices[3*(j*n+i)+2] = this.getElevation(x, y);
+            }
+        }
+        for(let i=0; i < n-1; i++) {
+            for(let j=0; j < m-1; j++) {
+                const ofs = 2*(j*(n-1)+i)*3;
+                triangles[ofs] = j*n+i; 
+                triangles[ofs+1] = j*n+(i+1);
+                triangles[ofs+2] = (j+1)*n+i;
+                triangles[ofs+3] = (j+1)*n+i;
+                triangles[ofs+4] = j*n+i+1;
+                triangles[ofs+5] = (j+1)*n+(i+1);
+            }
+        }
+        const a = new Float32Array(3);
+        const b = new Float32Array(3);
+        /*
+        for(let i=0; i < n-1; i++) {
+            for(let j=0; j < m-1; j++) {
+                // use the triangle with this vertex in the lower 
+                // left for computing the normal
+                const k1 = 3*(i*n+j);
+                const k2 = 3*((i+1)*n+j);
+                const k3 = 3*(i*n+(j+1));
+                const v = vertices;
+                a[0] = v[k2] - v[k1];
+                a[1] = v[k2+1] - v[k1+1];
+                a[2] = v[k2+2] - v[k1+2];
+                b[0] = v[k3] - v[k1];
+                b[1] = v[k3+1] - v[k1+1];
+                b[2] = v[k3+2] - v[k1+2];
+                const c = normals.subarray(3*(j*n+i), 3*(j*n+i+1));
+                crossProduct(b, a, c);
+                const norm = Math.sqrt(c[0]**2+c[1]**2+c[2]**2);
+                c[0] /= norm; c[1] /= norm; c[2] /= norm;
+            }
+        }
+        */
+        const normalCounts = new Uint32Array(vertices.length/3);
+        const c = new Float32Array(3);
+        for(let i=0; i < triangles.length/3; i++) {
+            const k1 = 3*triangles[3*i];
+            const k2 = 3*triangles[3*i+1];
+            const k3 = 3*triangles[3*i+2];
+            const v = vertices;
+            a[0] = v[k2] - v[k1];
+            a[1] = v[k2+1] - v[k1+1];
+            a[2] = v[k2+2] - v[k1+2];
+            b[0] = v[k3] - v[k1];
+            b[1] = v[k3+1] - v[k1+1];
+            b[2] = v[k3+2] - v[k1+2];
+            crossProduct(a, b, c);
+            const norm = Math.sqrt(c[0]**2+c[1]**2+c[2]**2);
+            c[0] /= norm; c[1] /= norm; c[2] /= norm;
+            normals[k1] += c[0]; normals[k2] += c[0]; normals[k3] += c[0];
+            normals[k1+1] += c[1]; normals[k2+1] += c[1]; normals[k3+1] += c[1];
+            normals[k1+2] += c[2]; normals[k2+2] += c[2]; normals[k3+2] += c[2];
+            normalCounts[triangles[3*i]]++; 
+            normalCounts[triangles[3*i+1]]++; 
+            normalCounts[triangles[3*i+2]]++;
+        }
+        /*
+        for(let i=0; i < normalCounts.length; i++) {
+            if(normalCounts[i] != 0) {
+                normals[3*i] /= normalCounts[i];
+                normals[3*i+1] /= normalCounts[i];
+                normals[3*i+2] /= normalCounts[i];
+            }
+        }
+        */
+        for(let i=0; i < normalCounts.length; i++) {
+            const norm = Math.sqrt(
+                normals[3*i]**2 + normals[3*i+1]**2 + normals[3*i+2]**2
+            );
+            if(norm > 1e-12) {
+                normals[3*i] /= norm;
+                normals[3*i+1] /= norm;
+                normals[3*i+2] /= norm;
+            }
+        }
+        this.vertices = vertices;
+        this.normals = normals;
+        this.triangles = triangles;
+        console.log(vertices, normals, normalCounts, triangles);
+    }
+}
+
+class TerrainDrawing {
+    constructor(gl, terrain, attributeLocations) {
+        this.triangleCount = terrain.triangles.length;
+        this.attributeLocations = attributeLocations;
+        this.vertexArray = gl.createVertexArray();
+        gl.bindVertexArray(this.vertexArray);
+        this.vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, terrain.vertices, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(attributeLocations.position);
+        gl.vertexAttribPointer(
+            attributeLocations.position, 3, gl.FLOAT, false, 0, 0
+        );
+        this.normalBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.normalBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, terrain.normals, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(attributeLocations.normal);
+        gl.vertexAttribPointer(
+            attributeLocations.normal, 3, gl.FLOAT, false, 0, 0
+        );
+        this.triangleBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.triangleBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, terrain.triangles, gl.STATIC_DRAW);
+        gl.bindVertexArray(null);
+    }
+    
+    draw(gl, shader, state) {
+        gl.useProgram(shader.program);
+        gl.bindVertexArray(this.vertexArray);
+        const projectionMatrixLocation = gl.getUniformLocation(
+            shader.program, "projectionMatrix"
+        );
+        gl.uniformMatrix4fv(
+            projectionMatrixLocation, false, state.projectionMatrix
+        );
+        gl.uniform1f(
+            gl.getUniformLocation(shader.program, "time"), state.time
+        );
+        gl.drawElements(gl.TRIANGLES, this.triangleCount, gl.UNSIGNED_SHORT, 0);
+    }
 }
 
 async function createGroundDrawing(gl, state) {
@@ -699,11 +955,6 @@ async function createGroundDrawing(gl, state) {
         program,
         vao,
         uniforms: [
-            {
-                type: "uniform1f", 
-                location: timeUniform,
-                values: state.time
-            },
             {
                 type: "uniform1i",
                 location: mapTextureLocation,
@@ -825,6 +1076,328 @@ class SpriteDrawing {
     }
 }
 
+// Drawing from a GLTF/GLB file
+class GLTFDrawing {
+    constructor(url, alignmentMatrix) {
+        this.url = url;
+        this.alignmentMatrix = alignmentMatrix || Identity4x4;
+        this.primitiveVertexArrays = {};
+        this.bufferViewBuffers = [];
+        this.nodeMatrices = [];
+        this.worldMatrices = [];
+        this.hitTimes = [];
+    }
+    
+    async loadBufferViewGLBuffer(gl, data, bufferPromises, index, target) {
+        if(this.bufferViewBuffers[index]) {
+            return this.bufferViewBuffers[index];
+        }
+        const bufferView = data.bufferViews[index];
+        const bufferData = await bufferPromises[bufferView.buffer];
+        const bufferViewData = new Uint8Array(
+            bufferData, bufferView.byteOffset || 0, bufferView.byteLength
+        );
+        const glBuffer = gl.createBuffer();
+        gl.bindBuffer(target, glBuffer);
+        gl.bufferData(target, bufferViewData, gl.STATIC_DRAW);
+        this.bufferViewBuffers[index] = glBuffer;
+        return glBuffer;
+    }
+
+        
+    async loadPrimitiveVertexArray(gl, attributeIndices, data, bufferPromises, meshIndex, primitiveIndex) {
+        const key = `${meshIndex}.${primitiveIndex}`;
+        if(this.primitiveVertexArrays[key]) {
+            return this.primitiveVertexArrays[key];
+        }
+        const accessorTypeToNumComponentsMap = {
+            "SCALAR": 1,
+            "VEC2": 2,
+            "VEC3": 3,
+            "VEC4": 4
+        };
+        const primitive = data.meshes[meshIndex].primitives[primitiveIndex];
+        const vertexArray = gl.createVertexArray();
+        gl.bindVertexArray(vertexArray);
+        for(const attribute in primitive.attributes) {
+            const attributeIndex = attributeIndices[attribute];
+            if(attributeIndex == -1) continue;            
+            const accessor = data.accessors[primitive.attributes[attribute]];
+            // TODO: accessor.bufferView can be undefined, defaults to all zeros
+            const bufferView = data.bufferViews[accessor.bufferView];
+            const buffer = await this.loadBufferViewGLBuffer(
+                gl, data, bufferPromises, accessor.bufferView, gl.ARRAY_BUFFER
+            );
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            // TODO: catch case where accessor.type is a matrix
+            const size = accessorTypeToNumComponentsMap[accessor.type];
+            gl.enableVertexAttribArray(attributeIndex);
+            gl.vertexAttribPointer(
+                attributeIndex, size, accessor.componentType, 
+                accessor.normalized == true, bufferView.byteStride,
+                accessor.byteOffset
+            );
+        }
+        if(primitive.indices) {
+            const accessor = data.accessors[primitive.indices];
+            // TODO: accessor.bufferView can be undefined, defaults to all zeros
+            const bufferView = data.bufferViews[accessor.bufferView];
+            const buffer = await this.loadBufferViewGLBuffer(
+                gl, data, bufferPromises, accessor.bufferView, 
+                gl.ELEMENT_ARRAY_BUFFER
+            );
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
+        }
+        this.primitiveVertexArrays[key] = vertexArray;
+        gl.bindVertexArray(null);
+        return vertexArray;
+    }
+    
+    buildGeometryTree(nodeIndex) {
+        const node = this.data.nodes[nodeIndex];
+        if(!this.nodeMatrices[nodeIndex]) {
+            this.nodeMatrices[nodeIndex] = new Float32Array(Identity4x4);
+        }
+        const children = node.children || [];
+        const geometryNode = {
+            translation: node.translation || [0, 0, 0],
+            rotation: node.rotation || [1, 0, 0, 0],
+            scale: node.scale || [1, 1, 1],
+            matrix: this.nodeMatrices[nodeIndex],
+            children: children.map(c => this.buildGeometryTree(c))
+        }
+        return geometryNode;
+    }
+    // data is parsed json from gltf file
+    async load(gl, attributeIndices) {
+        const response = await fetch(this.url);
+        const data = this.data = await response.json();
+        const bufferPromises = data.buffers.map(
+            async buf => await (await fetch("models/" + buf.uri)).arrayBuffer()
+        );
+        for(let i=0; i < data.meshes.length; i++) {
+            const mesh = data.meshes[i];
+            for(let j=0; j < mesh.primitives.length; j++) {
+                await this.loadPrimitiveVertexArray(
+                    gl, attributeIndices, data, bufferPromises, i, j
+                )
+            }
+        }
+        for(const scene of data.scenes) {
+            const sceneTree = {
+                scale: [1, 1, 1],
+                translation: [0, 0, 0],
+                rotation: [1, 0, 0, 0],
+                matrix: new Float32Array(Identity4x4),
+                children: []
+            }
+            for(const nodeIndex of scene.nodes) {
+                const tree = this.buildGeometryTree(nodeIndex);
+                sceneTree.children.push(tree);
+            }
+            GT.updateGeometryTree(sceneTree, {matrix: this.alignmentMatrix});
+            console.log(sceneTree);
+        }
+    }
+    
+    draw(gl, program, state) {
+        gl.useProgram(program);
+        const uniformLocations = {};
+        uniformLocations.time = gl.getUniformLocation(program, "time");
+        uniformLocations.projectionMatrix = gl.getUniformLocation(
+            program, "projectionMatrix"
+        );
+        uniformLocations.nodeMatrix = gl.getUniformLocation(
+            program, "nodeMatrix"
+        );        
+        uniformLocations.worldMatrix = gl.getUniformLocation(
+            program, "worldMatrix"
+        );
+        uniformLocations.color = gl.getUniformLocation(program, "color");
+
+        gl.uniform1f(uniformLocations.time, state.time);
+        gl.uniformMatrix4fv(
+            uniformLocations.projectionMatrix, false, state.projectionMatrix
+        );
+
+        const data = this.data;
+        let enableLog = false;
+//         if(!this.lastLogTime || (state.time - this.lastLogTime) > 5) {
+//             this.lastLogTime = state.time;
+//             enableLog = true;
+//         }
+        for(const worldMatrix of this.worldMatrices) {
+            gl.uniformMatrix4fv(
+                uniformLocations.worldMatrix, false, worldMatrix
+            );            
+            for(let k=0; k < data.nodes.length; k++) {
+                const i = data.nodes[k].mesh;
+                if(i === undefined)
+                    continue;
+                const mesh = data.meshes[i];
+                const nodeMatrix = this.nodeMatrices[k];
+                gl.uniformMatrix4fv(
+                    uniformLocations.nodeMatrix, false, nodeMatrix);
+                for(let j=0; j < mesh.primitives.length; j++) {
+                    const primitive = mesh.primitives[j];
+                    if(primitive.material !== undefined) {
+                        const material = data.materials[primitive.material];
+                        const color = material.pbrMetallicRoughness.baseColorFactor;
+                        gl.uniform4fv(uniformLocations.color, color);
+                    } else {
+                        gl.uniform4fv(uniformLocations.color, [1, 1, 1, 1]);
+                    }
+                    const vertexArray = this.primitiveVertexArrays[`${i}.${j}`];
+                    gl.bindVertexArray(vertexArray);
+                    if(primitive.indices) {
+                        const accessor = data.accessors[primitive.indices];
+                        gl.drawElements(
+                            primitive.mode || 4, accessor.count, accessor.componentType,
+                            accessor.byteOffset || 0
+                        );
+                        if(enableLog) {
+                            console.log("drawElements", primitive.mode || 4, accessor.count, accessor.componentType,
+                            accessor.byteOffset || 0);
+                        }
+                    } else {
+                        const accessor = data.accessors[primitive.attributes.POSITION];
+                        gl.draw(primitive.mode || 4, 0, accessor.count);
+                    }
+                }
+            }
+        }        
+    }
+        
+    update(state) {}
+}
+
+class TankGLTFDrawing extends GLTFDrawing {
+    update(state) {
+        const tankState = state.tanks.state;
+        while(this.worldMatrices.length < tankState.count) {
+            this.hitTimes.push(0);
+            this.worldMatrices.push(new Float32Array(Identity4x4));
+        }
+        if(this.worldMatrices.length > tankState.count) {
+            this.worldMatrices.splice(tankState.count);
+        }
+        for(let i=0; i < this.worldMatrices.length; i++) {
+            this.hitTimes[i] = tankState.hitTimes[i];
+            const tank_angle = tankState.orientations[i];
+            let e0_0 = Math.cos(tank_angle-Math.PI/2);
+            let e0_1 = Math.sin(tank_angle-Math.PI/2);
+            let e1_0 = -e0_1;
+            let e1_1 = e0_0;
+            const xpos = tankState.positions[2*i];
+            const ypos = tankState.positions[2*i+1];
+            let zpos = state.terrain.getElevation(xpos, ypos, state);
+            let e0_2 = state.terrain.getDerivative(xpos, ypos, e0_0, e0_1, state.time);
+            {
+                const e0_norm = Math.sqrt(e0_0**2+e0_1**2+e0_2**2);
+                e0_0 /= e0_norm;
+                e0_1 /= e0_norm;
+                e0_2 /= e0_norm;
+            }
+            let e1_2 = state.terrain.getDerivative(xpos, ypos, e1_0, e1_1, state.time);
+            {
+                const e1_norm = Math.sqrt(e1_0**2+e1_1**2+e1_2**2);
+                e1_0 /= e1_norm;
+                e1_1 /= e1_norm;
+                e1_2 /= e1_norm;
+            }            
+//             logger.log(state.time, "dz", xpos, ypos, e0_0, e0_1, dz);
+            if(tankState.life[i] <= 0) {
+                zpos = -1;
+            }
+            this.worldMatrices[i].set([
+                e0_0, e0_1, e0_2, 0,
+                e1_0, e1_1, e1_2, 0,
+                0, 0, 1, 0,                                
+                xpos, ypos, zpos, 1
+            ]);
+        }        
+    }
+}
+
+
+class ProjectileGLTFDrawing extends GLTFDrawing {
+    update(state) {
+        const projectileState = state.projectiles.state;
+        while(this.worldMatrices.length < projectileState.count) {
+            this.worldMatrices.push(new Float32Array(Identity4x4));
+        }
+        if(this.worldMatrices.length > projectileState.count) {
+            this.worldMatrices.splice(projectileState.count);
+        }        
+        const count = this.count;
+        const pos = projectileState.positions;
+        const frames = projectileState.frames;
+        for(let i=0; i < projectileState.count; i++) {
+            const e0_0 = frames[4*i];
+            const e0_1 = frames[4*i+1];
+            const e1_0 = frames[4*i+2];
+            const e1_1 = frames[4*i+3];
+            const z = projectileState.elevations[i];            
+            this.worldMatrices[i].set([
+                e1_0, e1_1, 0, 0,
+                e0_0, e0_1, 0, 0,
+                0, 0, 1, 0,
+                pos[2*i], pos[2*i+1], z, 1
+            ]);
+        }
+    }
+}
+
+
+
+async function testGLTFTanks(gl, program) {
+//     console.log(program);
+    const s = 0.1;
+    const alignmentMatrix = new Float32Array([
+        s, 0, 0, 0,
+        0, 0, s, 0,
+        0, s, 0, 0,
+        0, 0, 0, 1,
+    ]);
+    const attributeIndices = {
+        "POSITION" : gl.getAttribLocation(program, "position"),
+        "NORMAL" : gl.getAttribLocation(program, "normal"),
+        "TEXCOORD_0" : gl.getAttribLocation(program, "texcoord")
+    }
+//     console.log(attributeIndices);
+    const drawing = new TankGLTFDrawing(
+        "models/tank geometry.gltf", alignmentMatrix
+    );
+    await drawing.load(gl, attributeIndices);
+//     console.log(drawing);
+    return drawing;
+}
+
+async function testGLTFProjectiles(gl, program) {
+//     console.log(program);
+    const s = 0.1;
+    const alignmentMatrix = new Float32Array([
+        0, s, 0, 0,
+        0, 0, s, 0,
+        s, 0, 0, 0,
+        0, 0, 1.88*s, 1,
+    ]);
+    const attributeIndices = {
+        "POSITION" : gl.getAttribLocation(program, "position"),
+        "NORMAL" : gl.getAttribLocation(program, "normal"),
+        "TEXCOORD_0" : gl.getAttribLocation(program, "texcoord")
+    }
+//     console.log(attributeIndices);
+    const drawing = new ProjectileGLTFDrawing(
+        "models/bullet.gltf", alignmentMatrix
+    );
+    await drawing.load(gl, attributeIndices);
+//     console.log(drawing);
+    return drawing;
+}
+
+
+
 async function initObstacles(gl, shaders) {
     const images = {
         barrel: "kenney_topdownTanksRedux/PNG/Retina/barrelBlack_side.png",
@@ -858,7 +1431,7 @@ function updateObjectDrawing(drawing, objects) {
         drawing.worldMatrices.push(mat);
     }
     drawing.spriteCount = drawing.worldMatrices.length;
-    console.log(drawing);
+//     console.log(drawing);
 }
 
 function updateObstacles(state) {
@@ -874,35 +1447,23 @@ function updateObstacles(state) {
 }
 
 async function initTanks(gl, shaders) {
-    const tanks = [];
-    const tankTree = {
-        matrix: new Float32Array(Identity4x4),
-        translation: new Float32Array([0, 0, 0]),
-        scale: new Float32Array([1, 1, 1]),
-        rotation: new Float32Array([1, 0, 0, 0]),
-        children: []
-    }
     const baseurl = "kenney_topdownTanksRedux/PNG/Retina";
     const img = await GT.loadImage(baseurl + "/tank_red.png");
 //     const img = await GT.loadImage("tank_bigRedGreen.png");
 
-    for(let i=0; i < 10; i++) {
-        const drawing = new TankDrawing(gl, shaders, img);
+    const drawing = new TankDrawing(gl, shaders, img);
+    const N = 10;
+    const Nmax = 100;
+    for(let i=0; i < N; i++) {
+        const worldMatrix = new Float32Array(Identity4x4);
 //        await drawing.init(gl, shaders);
 //        const [x, z] = [0, 0];
-        const node = {
-            matrix: drawing.worldMatrix,
-            translation: new Float32Array([0, 0, 0]),
-            scale: new Float32Array([0.1, 0.1, 0.1]),
-            rotation: new Float32Array([1, 0, 0, 0]),
-            children: []
-        }
-        tankTree.children.push(node);
-        const tank = {drawing, node}
-        tanks.push(tank);
+        drawing.worldMatrices.push(worldMatrix);
+        drawing.hitTimes.push(0);
+        drawing.spriteCount++;
     }
-    const tankState = new TankState(tankTree.children);
-    const tankState1 = new TankState(tankTree.children);
+    const tankState = new TankState(Nmax);
+    const tankState1 = new TankState(Nmax);
     for(let i=0; i < 10; i++) {
         const [x, y] = [5*(2*Math.random()-1), 5*(2*Math.random()-1)];
         tankState.positions[2*i] = x;
@@ -918,14 +1479,12 @@ async function initTanks(gl, shaders) {
     tankState.ids[0] = Math.floor(Math.random() * 1e6);
     tankState.count = 10;
     const soundscape = new TankSoundscape();
-    return {tankTree, state: tankState, nextState: tankState1, drawings: tanks, soundscape};
+    return {state: tankState, nextState: tankState1, drawing, soundscape};
 }
 
 class TankState {
-    constructor(tankNodes) {
+    constructor(N) {
         this.activeTank = 0;
-        this.tankNodes = tankNodes;
-        const N = tankNodes.length;
         this.count = 0;
         this.maxCount = N;
         this.ids = new Uint32Array(N);
@@ -938,6 +1497,12 @@ class TankState {
         this.updateTimes = new Float32Array(N);
         this.hitTimes = new Float32Array(N);        
         this.hitTimes.fill(-1e6);
+        this.life = new Float32Array(N);
+        this.life.fill(5);
+        this.worldMatrices = [];
+        for(let i=0; i < N; i++) {
+            this.worldMatrices.push(new Float32Array(Identity4x4));
+        }
         this.deadReckoningVelocities = new Float32Array(N);
         this.deadReckoningTorques = new Float32Array(N);
         this.deadReckoningUpdates = [];
@@ -953,7 +1518,6 @@ class TankState {
     
     set(tankState) {
         this.count = tankState.count;
-        this.tankNodes = tankState.tankNodes;
         this.ids.set(tankState.ids);
         this.positions.set(tankState.positions);
         this.orientations.set(tankState.orientations);
@@ -963,6 +1527,10 @@ class TankState {
         this.angularAccelerations.set(tankState.angularAccelerations);
         this.updateTimes.set(tankState.updateTimes);        
         this.hitTimes.set(tankState.hitTimes);
+        this.life.set(tankState.life);
+        for(let i=0; i < this.count; i++) {
+            this.worldMatrices[i].set(tankState.worldMatrices[i]);
+        }
         this.deadReckoningVelocities.set(tankState.deadReckoningVelocities);
         this.deadReckoningTorques.set(tankState.deadReckoningTorques);        
         this.deadReckoningUpdates = tankState.deadReckoningUpdates.slice();
@@ -976,6 +1544,7 @@ class TankState {
         const i = this.count;
         this.ids[i] = id;
         this.updateTimes[i] = 0;
+        this.worldMatrices.push(new Float32Array(Identity4x4));
         this.count++;
         return i;
     }
@@ -998,104 +1567,105 @@ class TankState {
     }
     
     setEvolve(state) {
-        nextTankState(state, this);
+        this.set(state.tanks.state);
+
+        const collisions = state.collisions.projectileTanks;
+
+        const collidedTanks = new Set(collisions.map(([_, i]) => i));
+        for(const i of collidedTanks) {
+            this.hitTimes[i] = state.time;
+            this.life[i]--;
+        }
+
+        {
+            const input = state.controllers[0].steering;
+            const tank_index = state.tanks.state.activeTank;
+            const dt = state.dt;
+            const tank_angle = state.tanks.state.orientations[tank_index];    
+            // e0, e1 -> Tank moving frame
+            const tank_e0 = [Math.cos(tank_angle-Math.PI/2), Math.sin(tank_angle-Math.PI/2)];
+            const tank_e1 = [-tank_e0[1], tank_e0[0]];
+            const input_x = tank_e0[0]*input[0] + tank_e0[1]*input[1];
+            const input_y = tank_e1[0]*input[0] + tank_e1[1]*input[1];
+            const accel = input_x;
+            const turn = input_x > 0 ? input_y : -input_y;
+            this.accelerations[tank_index] = accel;
+            this.angularAccelerations[tank_index] = turn;
+        }
+        for(let i=0; i < this.count; i++) {
+            if(i == state.tanks.state.activeTank)
+                continue;
+            if(Math.random() < 1/60/5) {
+                this.accelerations[i] = 1;
+            }
+            if(Math.random() < 1/60/15) {
+                this.accelerations[i] = 0;
+            }            
+            if(Math.random() < 1/60/10) {
+                this.angularAccelerations[i] = 1;
+            }
+            if(Math.random() < 1/60/2) {
+                this.angularAccelerations[i] = 0;
+            }            
+        }
+    // {"type": "deadReckoning", "object": "tank", "index": 1, "position": [0, 0], "velocity": 1, "acceleration": 1}
+
+        for(const dr of state.deadReckoning.incoming) {
+            if(dr.object != "tank")
+                continue;
+            let i = dr.index !== undefined ? dr.index : this.getIndex(dr.id);
+            if(i == -1) 
+                i = this.add(dr.id);
+            if(i == 0)
+                continue;
+            this.setPosition(i, dr.position);
+            this.velocities[i] = dr.velocity;
+            this.accelerations[i] = dr.acceleration;
+            this.orientations[i] = dr.orientation;
+            this.angularAccelerations[i] = dr.angularAcceleration;
+            this.torques[i] = dr.torque;
+    //         console.log("velocities after DR", state.time[0], this.velocities);
+        }
+        const friction = 5;
+        this.deadReckoningUpdates = [];
+        for(let i=0; i < this.length; i++) {
+            const dt = state.time - this.updateTimes[i];
+            const tank_angle = state.tanks.state.orientations[i];
+            const direction = [Math.cos(tank_angle-Math.PI/2), Math.sin(tank_angle-Math.PI/2)];
+            const accel = this.accelerations[i];
+            const v0 = this.velocities[i];
+            const v1 = Math.max(-1.0, Math.min(1.0, v0 + accel * dt - friction * v0 * dt));
+            this.velocities[i] = v1;
+            const turn = state.tanks.state.angularAccelerations[i];
+            this.torques[i] += turn * dt - this.torques[i] * dt;
+
+                    if(Math.abs(v1 - this.deadReckoningVelocities[i]) > 1e-2
+              || Math.abs(this.torques[i] - this.deadReckoningTorques[i]) > 1e-2) {
+                this.deadReckoningUpdates.push({
+                    type: "deadReckoning",
+                    time: state.time,
+                    id: this.ids[i],
+                    position: this.getPosition(i),
+                    orientation: this.orientations[i],
+                    velocity: v1,
+                    acceleration: accel,
+                    angularAcceleration: this.angularAccelerations[i],
+                    torque: this.torques[i],
+                    object: "tank"
+                });
+                this.deadReckoningVelocities[i] = v1;
+                this.deadReckoningTorques[i] = this.torques[i];            
+            }
+
+            this.positions[2*i] += direction[0] * this.velocities[i] * dt;
+            this.positions[2*i+1] += direction[1] * this.velocities[i] * dt;
+            this.orientations[i] += this.torques[i] * dt;
+        }
+        this.updateTimes.fill(state.time);   
     }
 }
 
 let nanMsg = "";
-
-function nextTankState(state, nextState) {
-    nextState.set(state.tanks.state);
-   
-    const collisions = state.collisions.projectileTanks;
-
-    const collidedTanks = new Set(collisions.map(([_, i]) => i));
-    for(const i of collidedTanks) {
-        nextState.hitTimes[i] = state.time[0];
-    }
-
-    {
-        const input = state.controllers[0].steering;
-        const tank_index = state.tanks.state.activeTank;
-        const dt = state.dt;
-        const tank_angle = state.tanks.state.orientations[tank_index];    
-        // e0, e1 -> Tank moving frame
-        const tank_e0 = [Math.cos(tank_angle-Math.PI/2), Math.sin(tank_angle-Math.PI/2)];
-        const tank_e1 = [-tank_e0[1], tank_e0[0]];
-        const input_x = tank_e0[0]*input[0] + tank_e0[1]*input[1];
-        const input_y = tank_e1[0]*input[0] + tank_e1[1]*input[1];
-        const accel = input_x;
-        const turn = input_x > 0 ? input_y : -input_y;
-        nextState.accelerations[tank_index] = accel;
-        nextState.angularAccelerations[tank_index] = turn;
-    }
-// {"type": "deadReckoning", "object": "tank", "index": 1, "position": [0, 0], "velocity": 1, "acceleration": 1}
-    
-    for(const dr of state.deadReckoning.incoming) {
-        if(dr.object != "tank")
-            continue;
-        let i = dr.index !== undefined ? dr.index : nextState.getIndex(dr.id);
-        if(i == -1) 
-            i = nextState.add(dr.id);
-        if(i == 0)
-            continue;
-        nextState.setPosition(i, dr.position);
-        nextState.velocities[i] = dr.velocity;
-        nextState.accelerations[i] = dr.acceleration;
-        nextState.orientations[i] = dr.orientation;
-        nextState.angularAccelerations[i] = dr.angularAcceleration;
-        nextState.torques[i] = dr.torque;
-//         console.log("velocities after DR", state.time[0], nextState.velocities);
-    }
-    const friction = 5;
-    nextState.deadReckoningUpdates = [];
-    for(let i=0; i < nextState.length; i++) {
-        const dt = state.time - nextState.updateTimes[i];
-        const tank_angle = state.tanks.state.orientations[i];
-        const direction = [Math.cos(tank_angle-Math.PI/2), Math.sin(tank_angle-Math.PI/2)];
-        const accel = nextState.accelerations[i];
-        const v0 = nextState.velocities[i];
-        const v1 = Math.max(-1.0, Math.min(1.0, v0 + accel * dt - friction * v0 * dt));
-        nextState.velocities[i] = v1;
-        const turn = state.tanks.state.angularAccelerations[i];
-        nextState.torques[i] += turn * dt - nextState.torques[i] * dt;
-
-                if(Math.abs(v1 - nextState.deadReckoningVelocities[i]) > 1e-2
-          || Math.abs(nextState.torques[i] - nextState.deadReckoningTorques[i]) > 1e-2) {
-            nextState.deadReckoningUpdates.push({
-                type: "deadReckoning",
-                time: state.time[0],
-                id: nextState.ids[i],
-                position: nextState.getPosition(i),
-                orientation: nextState.orientations[i],
-                velocity: v1,
-                acceleration: accel,
-                angularAcceleration: nextState.angularAccelerations[i],
-                torque: nextState.torques[i],
-                object: "tank"
-            });
-            nextState.deadReckoningVelocities[i] = v1;
-            nextState.deadReckoningTorques[i] = nextState.torques[i];            
-        }
-        
-        nextState.positions[2*i] += direction[0] * nextState.velocities[i] * dt;
-        nextState.positions[2*i+1] += direction[1] * nextState.velocities[i] * dt;
-        nextState.orientations[i] += nextState.torques[i] * dt;
-    }
-    nextState.updateTimes.fill(state.time);    
-}
-
-function updateTankTree(gl, state) {
-    const tankState = state.tanks.state;
-    for(let i=0; i < tankState.length; i++) {
-        const node = state.tanks.state.tankNodes[i];
-        node.translation[0] = tankState.positions[2*i];
-        node.translation[1] = tankState.positions[2*i+1];
-        node.rotation[0] = Math.cos((tankState.orientations[i])/2);
-        node.rotation[3] = Math.sin((tankState.orientations[i])/2);
-        state.tanks.drawings[i].drawing.hitTimes[0] = state.tanks.state.hitTimes[i];
-    }
-}
 
 class TankDrawing {
     constructor(gl, shaders, img) {
@@ -1153,10 +1723,35 @@ class TankDrawing {
              attribLocations, uniformLocations, textures, 
              worldMatrices, hitTimes, spriteCount});
         
-        this.worldMatrix = new Float32Array(Identity4x4);
-        this.worldMatrices.push(this.worldMatrix);
-        this.hitTimes.push(0);
-        this.spriteCount = 1;        
+//         this.worldMatrix = new Float32Array(Identity4x4);
+//         this.worldMatrices.push(this.worldMatrix);
+        this.worldMatrices = [];
+//         this.hitTimes.push(0);
+        this.spriteCount = 0;        
+    }
+    
+    update(gl, state) {
+        const tankState = state.tanks.state;
+        while(this.spriteCount < tankState.count) {
+            this.hitTimes.push(0);
+            this.worldMatrices.push(new Float32Array(Identity4x4));
+            this.spriteCount++;
+        }
+        for(let i=0; i < this.spriteCount; i++) {
+            this.hitTimes[i] = tankState.hitTimes[i];
+            const tank_angle = tankState.orientations[i];
+            const e0_0 = Math.cos(tank_angle);
+            const e0_1 = Math.sin(tank_angle);
+            const e1_0 = -e0_1;
+            const e1_1 = e0_0;
+            const s = 0.1;
+            this.worldMatrices[i].set([
+                s*e0_0, s*e0_1, 0, 0,
+                s*e1_0, s*e1_1, 0, 0,
+                0, 0, s, 0,
+                tankState.positions[2*i], tankState.positions[2*i+1], 0, 1
+            ]);
+        }        
     }
             
     draw(gl, state) {
@@ -1188,8 +1783,8 @@ class TankSoundscape {
         const hitTimes = state.tanks.state.hitTimes;
 //         document.querySelector("#msglog-1").innerHTML = `${state.time} ${hitTimes}`;
         for(let i=0; i < state.tanks.state.count; i++) {
-            if(Math.abs(hitTimes[i] - state.time[0]) < 1e-3) {
-                console.log("hit", jukebox);
+            if(Math.abs(hitTimes[i] - state.time) < 1e-3) {
+//                 console.log("hit", jukebox);
                 jukebox.play("hit");
             }
         }
@@ -1224,6 +1819,7 @@ class ProjectileState {
         this.maxCount = maxProjectiles;
         const N = maxProjectiles;
         this.positions = new Float32Array(2*N);
+        this.elevations = new Float32Array(N);
         this.velocities = new Float32Array(2*N);
         this.frames = new Float32Array(4*N);
         this.sources = new Float32Array(N);
@@ -1235,6 +1831,8 @@ class ProjectileState {
         const i = this.count;
         this.positions[2*i] = position[0];
         this.positions[2*i+1] = position[1];
+        this.elevations[i] = position[2];
+//         console.log("add", position);
         this.velocities[2*i] = velocity[0];
         this.velocities[2*i+1] = velocity[1];
         this.frames.set(frame, 4*i);
@@ -1246,6 +1844,7 @@ class ProjectileState {
     
     remove(i) {
         this.positions.copyWithin(2*i, 2*(i+1));
+        this.elevations.copyWithin(i, i+1);
         this.velocities.copyWithin(2*i, 2*(i+1));
         this.frames.copyWithin(4*i, 4*(i+1));
         this.sources.copyWithin(i, (i+1));        
@@ -1271,6 +1870,7 @@ class ProjectileState {
                 continue;
             this.positions[2*j] = prevState.positions[2*i];
             this.positions[2*j+1] = prevState.positions[2*i+1];
+            this.elevations[j] = prevState.elevations[i];
             this.velocities[2*j] = prevState.velocities[2*i];
             this.velocities[2*j+1] = prevState.velocities[2*i+1];
             this.frames[4*j] = prevState.frames[4*i];
@@ -1314,6 +1914,7 @@ class ProjectileState {
                 (this.velocities[2*i] * this.frames[4*i+1] +
                  this.velocities[2*i+1] * this.frames[4*i+3]) * dt;
         }
+        /*
         if(state.controllers[0].fire) {
             const activeTank = state.tanks.state.activeTank;
             const activeTankId = state.tanks.state.ids[activeTank];
@@ -1329,6 +1930,32 @@ class ProjectileState {
                 frame: Array.from(frame), source: activeTankId
             });
             console.log("fire", activeTankId, this.ids[i]);
+        }
+        */
+        for(let i=0; i < state.tanks.state.count; i++) {
+            if((i == state.tanks.state.activeTank && state.controllers[0].fire) ||
+               (i != state.tanks.state.activeTank && Math.random() < 1/60/5 && state.tanks.state.life[i] > 0)) {
+                const activeTank = i;
+                const activeTankId = state.tanks.state.ids[activeTank];
+                const tankPos = state.tanks.state.getPosition(activeTank);
+                const pos = [
+                    tankPos[0], 
+                    tankPos[1], 
+                    state.terrain.getElevation(tankPos[0], tankPos[1])
+                ];
+                const frame = state.tanks.state.getFrame(activeTank);
+                // document.querySelector("#msglog-2").innerHTML = frame;
+                const j = this.add(
+                    pos,
+                    [1, 0], frame, activeTankId);
+                this.deadReckoningUpdates.push({
+                    type: "deadReckoning",
+                    object: "projectile",
+                    id: this.ids[j],
+                    position: pos, velocity: [1, 0], 
+                    frame: Array.from(frame), source: activeTankId
+                });
+            }
         }
     }
     
@@ -1346,7 +1973,7 @@ class ProjectileState {
                 s*e1_0, s*e1_1, 0, 0,
                 s*e0_0, s*e0_1, 0, 0,
                 0, 0, 1, 0,
-                pos[2*i], pos[2*i+1], 0, 1
+                pos[2*i], pos[2*i+1], this.elevations[i]+0.1, 1
             ]);
         }
     }
@@ -1361,6 +1988,8 @@ function detectProjectileTankCollisions(state) {
     const projectileState = state.projectiles.state;
     for(let i=0; i < projectileState.count; i++) {
         for(let j=0; j < tankState.length; j++) {
+            if(tankState.life[j] <= 0)
+                continue;
             if(tankState.ids[j] == projectileState.sources[i]) // avoid self-fire
                 continue;
             const d2 = 
