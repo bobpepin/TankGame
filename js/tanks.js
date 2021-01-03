@@ -4,15 +4,19 @@
 // Network multiplayer
 // Terrain
 // Make computer tanks drive around randomly
+// Terrain texture
 
 // TOFIX
 // Sort out tank orientation, all orientations in 3D
 
 // TODO
-// Terrain texture
+// Split into multiple files
+// Share lights across shaders
+// Network control panel for parameters
 // Tank life
 // When driving, reversal requires to pass through the center
 // Bump maps & shadows
+// Sky texture
 // Different tanks
 // Different weapons
 // Show active tank
@@ -60,7 +64,7 @@ const twoTriangles = {
 
 class PointerJoystick {
     constructor(elt, radius) {
-        this.radius = radius || 16;
+        this.radius = radius || 64;
 //         elt.addEventListener("pointerdown", e => this.handleDown(e));
         elt.addEventListener("mousedown", e => this.handleDown(e));        
 //         elt.addEventListener("pointerup", e => this.handleUp(e));
@@ -76,7 +80,12 @@ class PointerJoystick {
         this.canvas = elt;
         this.context = elt.getContext("2d");
         this.active = false;
+        this.tap = false;
+        this.moved = false;
+        this.startTime = -Infinity;
+        this.stopTime = -Infinity;
         this.axes = [0, 0];
+        this.lastOffset = [0, 0];
     }
     
     handleDown(event) {
@@ -109,11 +118,20 @@ class PointerJoystick {
     start(clientX, clientY) {
 //         console.log("start", offsetX, offsetY);
         if(this.active) return;
-        const eltRect = this.canvas.getBoundingClientRect();
-        const offsetX = clientX - eltRect.left;
-        const offsetY = clientY - eltRect.top;        
-        this.origin = [offsetX, offsetY];
+        this.startTime = performance.now();
+        if(this.startTime - this.stopTime > 1000) {
+            const eltRect = this.canvas.getBoundingClientRect();
+            const offsetX = clientX - eltRect.left;
+            const offsetY = clientY - eltRect.top;        
+            this.origin = [offsetX, offsetY];
+            this.lastOffset[0] = offsetX;
+            this.lastOffset[1] = offsetY;
+            this.moved = false;
+        } else {
+            this.tap = true;
+        }
         this.active = true;
+        this.move(clientX, clientY);
     }
     
     handleUp(event) {
@@ -134,6 +152,10 @@ class PointerJoystick {
         this.axes = [0, 0];
         const {context, canvas} = this;
         context.clearRect(0, 0, canvas.width, canvas.height);        
+        this.stopTime = performance.now()
+        if(this.stopTime - this.startTime < 1000 && !this.moved) {
+            this.tap = true;
+        }
     }
     
     handleMove(event) {
@@ -158,10 +180,16 @@ class PointerJoystick {
         context.clearRect(0, 0, canvas.width, canvas.height);
         const eltRect = this.canvas.getBoundingClientRect();
         const offsetX = clientX - eltRect.left;
-        const offsetY = clientY - eltRect.top;                
+        const offsetY = clientY - eltRect.top; 
+        // TODO: Stay on a circle of radius "radius"
+        const deltaX = offsetX - this.lastOffset[0];
+        const deltaY = offsetY - this.lastOffset[1];
         const [x0, y0] = this.origin;
         const [x, y] = [offsetX, offsetY];
         this.axes = [x-x0, y0-y].map(a => Math.max(Math.min(a, this.radius), -this.radius)/this.radius);
+        if(this.axes[0]**2 + this.axes[1]**2 > 1) {
+            this.moved = true;
+        }
         context.beginPath();
         context.strokeStyle = "black";
         context.lineWidth = 1;
@@ -169,6 +197,10 @@ class PointerJoystick {
         context.lineTo(x, y);
         context.stroke();
         context.closePath();
+    }
+    
+    reset() {
+        this.tap = false;
     }
 }
 
@@ -291,7 +323,7 @@ async function init() {
         "perlin12.png", 
 //         "square mountain.png",
 //         "gradient bilinear.png",
-        {xmin: -20, xmax: 20, ymin: -20, ymax: 20, zmin: 0, zmax: 1, 
+        {xmin: -20, xmax: 20, ymin: -20, ymax: 20, zmin: 0, zmax: 3, 
          xres: 10e-1, yres: 10e-1}
     );
     await terrain.load();
@@ -299,13 +331,18 @@ async function init() {
         gl, terrain, 
         {
             position: gl.getAttribLocation(shaders.terrain.program, "position"),
-            normal: gl.getAttribLocation(shaders.terrain.program, "normal")
-        }
+            normal: gl.getAttribLocation(shaders.terrain.program, "normal"),
+            texcoords: gl.getAttribLocation(shaders.terrain.program, "texcoord")
+        },
+        [
+            await GT.loadImage("assets/tileGrass1.png"), 
+            await GT.loadImage("assets/tileSand1.png")
+        ]
     );
     const tanks = await initTanks(gl, shaders);
     const projectiles = await initProjectiles(gl, shaders);
     
-    const cameraDynamics = new CameraDynamics();
+    const cameraDynamics = new CameraDynamicsShoulder();
     
     const state = {
         gameId: Math.random(),
@@ -411,7 +448,7 @@ function render(gl, state, timeMs, websocket) {
     
     renderTankTexture(gl, state);
     
-    gl.clearColor(0, 255, 0, 1);
+    gl.clearColor(153/255, 203/255, 238/255, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     const directorCameraEnabled = true;
     {
@@ -512,6 +549,10 @@ function updateInput(state) {
     }
     state.controllers[0].steering = input;
     state.controllers[0].fire = state.inputDevices.fireButtons[0].count;
+    if(state.inputDevices.joysticks[0].tap) {
+        state.controllers[0].fire += 1;
+    }
+    state.inputDevices.joysticks[0].reset();    
     state.inputDevices.fireButtons[0].reset();
 }
 
@@ -545,7 +586,7 @@ function sendNetworkMessages(websocket, state) {
     state.outgoingNetworkMessages = [];
 }
 
-class CameraDynamics {
+class CameraDynamicsTopDown {
     constructor(scale) {
         this.scale = scale || 0.5;        
         this.center = [0, 0];
@@ -602,6 +643,108 @@ class CameraDynamics {
     }
 }
 
+class CameraDynamicsShoulder {
+    constructor(offset, angle) {
+        this.offset = offset || [-2.0, 0.0, 1.0];
+        this.angle = angle || Math.PI/6;
+        this.center = [0, 0, 0];
+        this.gamma = null;
+        this.focal = null;
+    }
+    
+    // ratio = width / height
+    update(state, ratio) {
+        function getParam(name) {
+            return parseFloat(document.querySelector(`#camera-${name}`).value);
+        }
+        this.offset[0] = getParam("x");
+        this.offset[1] = getParam("y");
+        this.offset[2] = getParam("z");
+        this.angle = getParam("angle");
+        this.focal = parseFloat(document.querySelector("#camera-focal").value);
+        const tankPos = state.tanks.state.getPosition(state.tanks.state.activeTank);
+        const dt = state.dt;
+        this.gamma = parseFloat(document.querySelector("#camera-gamma").value);
+        const gamma = this.gamma * dt;
+        this.center[0] = (1-gamma)*this.center[0] + gamma*tankPos[0];
+        this.center[1] = (1-gamma)*this.center[1] + gamma*tankPos[1];
+        this.center[2] = (1-gamma)*this.center[2] +
+            gamma*state.terrain.getElevation(tankPos[0], tankPos[1]);
+        const currentFrame = state.tanks.state.getFrame(state.tanks.state.activeTank);
+        if(!this.frame) {
+            this.frame = currentFrame
+        } else {
+            for(let i=0; i < currentFrame.length; i++) {
+                this.frame[i] = (1-gamma)*this.frame[i] + gamma*currentFrame[i];
+            }
+        }
+        this.ratio = ratio;
+    }
+    
+    updateCameraMatrix(matrix) {
+        const s = 1;
+        const r = this.ratio;
+        const sx = s/Math.max(r, 1);
+        const sy = s/Math.min(r, 1);
+        // e_x, e_y and e_z are the screen space vectors in world coordinates
+        // +Z is up in view coordinates
+        // e_1 and e_2 is the basis of the tank moving frame in world coordinates
+        const e_1 = [this.frame[0], this.frame[1], 0];
+        const e_2 = [this.frame[2], this.frame[3], 0];
+        const e_3 = [0, 0, 1];
+        const frameBasis = new Float32Array([
+            e_1[0], e_1[1], e_1[2],
+            e_2[0], e_2[1], e_2[2],
+            e_3[0], e_3[1], e_3[2]
+        ]);
+        const cameraCenter = new Float32Array([
+            this.center[0] + this.offset[0]*e_1[0] + this.offset[1]*e_2[0] + this.offset[2] * e_3[0],
+            this.center[1] + this.offset[0]*e_1[1] + this.offset[1]*e_2[1] + this.offset[2] * e_3[1],
+            this.center[2] + this.offset[0]*e_1[2] + this.offset[1]*e_2[2] + this.offset[2] * e_3[2]
+        ]);
+        const e_y = new Float32Array([
+            Math.sin(this.angle) * e_1[0] + Math.cos(this.angle) * e_3[0],
+            Math.sin(this.angle) * e_1[1] + Math.cos(this.angle) * e_3[1],
+            Math.sin(this.angle) * e_1[2] + Math.cos(this.angle) * e_3[2],
+        ]);        
+        const e_z = new Float32Array([
+            -Math.cos(this.angle) * e_1[0] + Math.sin(this.angle) * e_3[0], 
+            -Math.cos(this.angle) * e_1[1] + Math.sin(this.angle) * e_3[1], 
+            -Math.cos(this.angle) * e_1[2] + Math.sin(this.angle) * e_3[2]
+        ]);
+        const e_x = crossProduct(e_y, e_z);
+        const b = new Float32Array([
+            -matmul(e_x, cameraCenter, 1, 1)[0],
+            -matmul(e_y, cameraCenter, 1, 1)[0],
+            -matmul(e_z, cameraCenter, 1, 1)[0]
+        ]);
+        const cameraMatrix = new Float32Array([
+            e_x[0], e_y[0], e_z[0], 0,
+            e_x[1], e_y[1], e_z[1], 0,
+            e_x[2], e_y[2], e_z[2], 0,
+            b[0], b[1], b[2], 1
+        ]);
+        
+        const d = this.focal;
+        
+        const perspectiveMatrix = new Float32Array([
+            d, 0, 0, 0,
+            0, d, 0, 0,
+            0, 0, -1, -1,
+            0, 0, -d, 0
+        ]);
+        /*
+        const perspectiveMatrix = new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, -1, 0,
+            0, 0, 0, 1
+        ]);
+        */
+        matmul(perspectiveMatrix, cameraMatrix, 4, 4, matrix);
+//         matrix.set(cameraMatrix);
+    }
+}
 
 async function initShaders(gl) {
     const shaderSources = {
@@ -741,6 +884,7 @@ class Terrain {
     buildMesh(resolutionX, resolutionY) {
         const n = Math.floor((this.region.xmax-this.region.xmin)/resolutionX) + 1;
         const m = Math.floor((this.region.ymax-this.region.ymin)/resolutionY) + 1;
+        const texcoords = new Float32Array(n*m*2);
         const vertices = new Float32Array(n*m*3);
         const normals = new Float32Array(n*m*3);
         const triangles = new Uint16Array(2*(n-1)*(m-1)*3);
@@ -752,6 +896,8 @@ class Terrain {
                 vertices[3*(j*n+i)] = x
                 vertices[3*(j*n+i)+1] = y;
                 vertices[3*(j*n+i)+2] = this.getElevation(x, y);
+                texcoords[2*(j*n+i)] = i/n;
+                texcoords[2*(j*n+i)+1] = j/m;
             }
         }
         for(let i=0; i < n-1; i++) {
@@ -804,6 +950,7 @@ class Terrain {
             b[2] = v[k3+2] - v[k1+2];
             crossProduct(a, b, c);
             const norm = Math.sqrt(c[0]**2+c[1]**2+c[2]**2);
+//             const norm = 1.0;
             c[0] /= norm; c[1] /= norm; c[2] /= norm;
             normals[k1] += c[0]; normals[k2] += c[0]; normals[k3] += c[0];
             normals[k1+1] += c[1]; normals[k2+1] += c[1]; normals[k3+1] += c[1];
@@ -834,12 +981,13 @@ class Terrain {
         this.vertices = vertices;
         this.normals = normals;
         this.triangles = triangles;
-        console.log(vertices, normals, normalCounts, triangles);
+        this.texcoords = texcoords;
+        console.log(vertices, normals, texcoords, normalCounts, triangles);
     }
 }
 
 class TerrainDrawing {
-    constructor(gl, terrain, attributeLocations) {
+    constructor(gl, terrain, attributeLocations, imgs) {
         this.triangleCount = terrain.triangles.length;
         this.attributeLocations = attributeLocations;
         this.vertexArray = gl.createVertexArray();
@@ -858,10 +1006,40 @@ class TerrainDrawing {
         gl.vertexAttribPointer(
             attributeLocations.normal, 3, gl.FLOAT, false, 0, 0
         );
+        this.texcoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.texcoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, terrain.texcoords, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(attributeLocations.texcoords);
+        gl.vertexAttribPointer(
+            attributeLocations.texcoords, 2, gl.FLOAT, false, 0, 0
+        );
         this.triangleBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.triangleBuffer);
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, terrain.triangles, gl.STATIC_DRAW);
         gl.bindVertexArray(null);
+
+        const groundTexture = gl.createTexture();
+        {
+            const {width, height} = imgs[0];
+            const N = imgs.length;
+            gl.bindTexture(gl.TEXTURE_2D, groundTexture);   
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);        
+            const data = new Uint8Array(4*N*width*height);
+            gl.texImage2D(
+                gl.TEXTURE_2D, 0, gl.RGBA, N*width, height, 0, 
+                gl.RGBA, gl.UNSIGNED_BYTE, data);          
+
+            for(let i=0; i < imgs.length; i++) {
+                gl.texSubImage2D(
+                    gl.TEXTURE_2D, 0, i*width, 0, 
+                    gl.RGBA, gl.UNSIGNED_BYTE, imgs[i]);
+                console.log("texSubImage2D", gl.TEXTURE_2D, 0, i*width, 0, gl.RGBA, gl.UNSIGNED_BYTE, imgs[i]);
+            }
+        }
+        this.groundTexture = groundTexture;
     }
     
     draw(gl, shader, state) {
@@ -876,6 +1054,11 @@ class TerrainDrawing {
         gl.uniform1f(
             gl.getUniformLocation(shader.program, "time"), state.time
         );
+        gl.uniform1i(
+            gl.getUniformLocation(shader.program, "groundSampler"), 0
+        );
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.groundTexture);
         gl.drawElements(gl.TRIANGLES, this.triangleCount, gl.UNSIGNED_SHORT, 0);
     }
 }
@@ -1576,7 +1759,7 @@ class TankState {
             this.hitTimes[i] = state.time;
             this.life[i]--;
         }
-
+/* 2D Control
         {
             const input = state.controllers[0].steering;
             const tank_index = state.tanks.state.activeTank;
@@ -1592,6 +1775,15 @@ class TankState {
             this.accelerations[tank_index] = accel;
             this.angularAccelerations[tank_index] = turn;
         }
+        */
+        {
+            const input = state.controllers[0].steering;
+            const tank_index = state.tanks.state.activeTank;
+            this.accelerations[tank_index] = input[1];
+            const turn = Math.abs(input[0]) >= 0.5 ? input[0] : 0;
+            this.angularAccelerations[tank_index] = -turn*Math.sign(this.velocities[tank_index]);
+        }
+        /* AI for enemy tanks */
         for(let i=0; i < this.count; i++) {
             if(i == state.tanks.state.activeTank)
                 continue;
@@ -1626,7 +1818,7 @@ class TankState {
             this.torques[i] = dr.torque;
     //         console.log("velocities after DR", state.time[0], this.velocities);
         }
-        const friction = 5;
+        const friction = 1;
         this.deadReckoningUpdates = [];
         for(let i=0; i < this.length; i++) {
             const dt = state.time - this.updateTimes[i];
@@ -1634,10 +1826,10 @@ class TankState {
             const direction = [Math.cos(tank_angle-Math.PI/2), Math.sin(tank_angle-Math.PI/2)];
             const accel = this.accelerations[i];
             const v0 = this.velocities[i];
-            const v1 = Math.max(-1.0, Math.min(1.0, v0 + accel * dt - friction * v0 * dt));
+            const v1 = Math.max(-5.0, Math.min(5.0, v0 + accel * dt - friction * v0 * dt));
             this.velocities[i] = v1;
             const turn = state.tanks.state.angularAccelerations[i];
-            this.torques[i] += turn * dt - this.torques[i] * dt;
+            this.torques[i] += turn * dt - 2.0*this.torques[i] * dt;
 
                     if(Math.abs(v1 - this.deadReckoningVelocities[i]) > 1e-2
               || Math.abs(this.torques[i] - this.deadReckoningTorques[i]) > 1e-2) {

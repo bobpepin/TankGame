@@ -20,12 +20,13 @@
 -->
 <div style="display: flex; width: 100%; height: 100%; flex-direction: column">
 <!-- <div style="flex: 1 1 0; display: flex; flex-direction: row"> -->
-<div style="flex: 0 1 auto; display: flex; flex-direction: row">
-<canvas id="game-canvas" height=512 width=1024 style="flex: 0 0 1024px"></canvas>
-<canvas id="texture-canvas" height=512 width=512 style="flex: 0 0 512px"></canvas>    
+<div style="flex: 0 1 auto; display: grid;">
+    <canvas id="control-canvas" height=512 width=1024 style="grid-row: 1; grid-column: 1; z-index: 1;"></canvas>    
+<canvas id="game-canvas" height=512 width=1024 style="grid-row: 1; grid-column: 1; z-index: 0"></canvas>
+<canvas id="texture-canvas" height=512 width=512 style="display: none; grid-row: 2; grid-column: 1"></canvas>    
 </div>
-<div style="flex: 0 0 128px">
-<canvas id="control-canvas" height=128 width=128 style="outline: 1px solid black;">
+<div style="flex: 0 0 128px; display: none;">
+<canvas id="control-canvas1" height=128 width=128 style="outline: 1px solid black;">
 </canvas>
 <button type="button" id="fire-button" style="width: 128px; height: 128px; vertical-align: top; outline: 1px solid black;">
 <img src="kenney_topdownTanksRedux/PNG/Retina/bulletRed1_outline.png">    
@@ -33,6 +34,18 @@
 </div>
 
 <div style="flex: 0 1 auto">
+<div style="display: flex">Tank Camera
+    <label>Offset</label>
+    <input type="number" id="camera-x" min="-10" max="10" step="0.05" value="-1.4">
+    <input type="number" id="camera-y" min="-10" max="10" step="0.05" value="0.0">
+    <input type="number" id="camera-z" min="-10" max="10" step="0.05" value="1.85">    
+    <label>Angle</label>
+    <input type="number" id="camera-angle" min="-2" max="2" step="0.05" value="0.4"> 
+    <label>Gamma</label>
+    <input type="number" id="camera-gamma" min="0" max="10" step="0.05" value="3.25">
+    <label>Focal distance</label>
+    <input type="number" id="camera-focal" min="0.1" max="2.0" step="0.1" value="1.1">
+</div>
 <div style="display: flex">Director Camera
     <label>Distance</label>
     <input type="number" id="director-distance" min="0" value="5">
